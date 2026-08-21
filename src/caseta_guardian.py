@@ -5,9 +5,9 @@ Instal·lació Victron ESS (Cerbo GX, MultiPlus-II, Pylontech US3000C, Huawei PV
 
 JERARQUIA DE PRIORITATS:
 1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn, limitació corrent, escut 65%).
-2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva nocturna 80-100%, alerta calor 95%).
+2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva tarda/vespre 85%, alerta calor 95-100%).
 3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
-4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i pujada a 80% a partir de les 16h).
+4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i pujada a 85% a partir de les 16h).
 """
 
 import json
@@ -102,7 +102,7 @@ class CasetaGuardian:
         self.max_temp_today = 32.0
         self.sunset_temp = 28.0
         self.blackout_risk = 20
-        self.target_reserve_soc = 80.0
+        self.target_reserve_soc = 85.0
         self.last_applied_min_soc = None
         
         # Comptadors de Temps & Histèresi
@@ -168,24 +168,24 @@ class CasetaGuardian:
             
         # 4. ☀️ Franja Diürna (07:00h a 19:59h):
         elif 7 <= current_hour < 20:
-            # A partir de les 16:00h (la producció cau però queda molta calor/clima per davant):
-            # Establim el sòl al 80% per reservar la bateria per a la nit.
+            # A partir de les 16:00h (la calor continua però el sol cau):
+            # Blindem el sòl al 85% per garantir màxima resiliència i SAI.
             is_afternoon = (current_hour >= 16) or (self.remaining_kwh_today < 2.0)
             
             if is_afternoon:
-                target = 80.0
-                phase_name = "🌇 Tarda / Coixí de Calor (80% per preservar la nit)"
+                target = 85.0
+                phase_name = "🌇 Tarda / Vespre Resilient (85% Màxima Seguretat & SAI)"
             elif self.today_kwh_est >= 5.0:
                 target = 70.0
                 phase_name = "☀️ Dia Radiant (70% per absorbir excedent solar)"
             else:
-                target = 80.0
-                phase_name = "☁️ Dia Variable / Tarda (80% Coixí Solar)"
+                target = 85.0
+                phase_name = "☁️ Dia Variable / Tarda (85% Coixí Solar)"
                 
         # 5. 🌆 Vespre (20:00h a 23:59h): Coixí de transició abans de la nit
         else:
-            target = 80.0
-            phase_name = "🌆 Vespre (80% Manteniment de SAI)"
+            target = 85.0
+            phase_name = "🌆 Vespre (85% Manteniment de SAI)"
 
         self.target_reserve_soc = target
 
