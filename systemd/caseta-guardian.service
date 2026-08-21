@@ -1,0 +1,16 @@
+[Unit]
+Description=Caseta Guardian - Gestor Energetic Victron ESS i Salut de Bateria
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/casimir/Documents/Segon_Cervell/.agents/skills/victron-caseta-manager/scripts
+ExecStart=/usr/bin/uv run --with paho-mqtt python3 /home/casimir/Documents/Segon_Cervell/.agents/skills/victron-caseta-manager/scripts/caseta_guardian.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

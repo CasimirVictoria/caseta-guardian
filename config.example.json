@@ -1,0 +1,10 @@
+{
+  "cerbo_ip": "192.168.1.100",
+  "portal_id": "c0619ab2xxxx",
+  "ntfy_topic": "your_private_ntfy_topic",
+  "tuya_s06_ip": "192.168.1.50",
+  "tuya_dev_id": "your_tuya_device_id",
+  "tuya_local_key": "your_tuya_local_key",
+  "latitude": 39.00,
+  "longitude": -0.30
+}
