@@ -6,6 +6,38 @@ Lightweight native Python 3 systemd daemon and real-time CLI telemetry dashboard
 
 ---
 
+## 🏗️ Architecture: Migration from Node-RED on Cerbo GX to an Always-On Linux Host
+
+This project was born from an architectural evolution: **migrating away from embedded Node-RED on the Cerbo GX to a standalone, lightweight Python daemon running on an always-on local Linux host / laptop**.
+
+```
+  ┌────────────────────────────────────────┐       MQTT (LAN / <1 ms)       ┌────────────────────────────────────────┐
+  │         💻 ALWAYS-ON LINUX HOST        │ ─────────────────────────────> │            🎛️ CERBO GX (GX OS)         │
+  │ • caseta_guardian.py (systemd daemon)  │ <───────────────────────────── │ • FlashMQ Broker (C++)                 │
+  │ • Open-Meteo 7-day predictive API      │                                │ • CANbus BMS (Pylontech battery)       │
+  │ • Ntfy push alerts & Tuya IR HVAC      │                                │ • RS485 Modbus Solar Meter (Huawei)    │
+  │ • 15 MB RAM | <0.1% CPU                │                                │ • Pristine Factory Firmware (46.8 ºC)  │
+  └────────────────────────────────────────┘                                └────────────────────────────────────────┘
+```
+
+### 🌟 Why this Distributed Architecture is Dramatically Superior:
+
+1. 🪶 **Pristine, Factory-Grade Cerbo GX:**
+   - The Cerbo GX is relieved of heavy Node.js runtimes, fragile npm modules, and web server rendering.
+   - It performs exclusively what embedded hardware does best: **ultra-fast CANbus battery BMS monitoring, RS485 energy metering, and inverter safety**.
+   - **100% Update-Proof:** You can update Venus OS to any future version without ever risking losing custom flows or broken dependencies.
+
+2. ❄️ **Massive Thermal & Memory Relief:**
+   - **RAM Freed on Cerbo GX:** Dropped from ~450 MB under Node-RED down to only **`270 MB`** (leaving **>720 MB of free RAM**!).
+   - **CPU Temperature Drop:** Cerbo GX CPU temperature plunged from 55 ºC – 58 ºC down to **`46.8 ºC`** *(8 to 11 ºC cooler in the peak of Mediterranean August!)*.
+   - **Host Overhead:** The Python daemon on the laptop consumes a negligible **`15 MB` of RAM** and **`<0.1%` CPU**.
+
+3. 🛠️ **Maintainability & Unix Simplicity:**
+   - Pure Python 3 standard code: readable, typed, and maintainable.
+   - Logs are monitored seamlessly via `journalctl --user -u caseta-guardian -f`.
+
+---
+
 ## 🌟 Philosophy: The "Holy Grail" of Solar Autoconsumption
 
 This project solves the fundamental trade-off of residential solar by combining **the best of off-grid islanded systems with the best of grid-tied architectures**:
@@ -86,8 +118,6 @@ Unlike conventional off-grid setups that cycle the battery deeply every single d
 
 ## 💻 Real-Time CLI Dashboard (`caseta`)
 
-The project includes an ultra-fast terminal telemetry tool that reads live Victron D-Bus/MQTT data and cached weather forecasts in **0 milliseconds**:
-
 ```bash
 $ caseta
 
@@ -126,7 +156,7 @@ Connectant a Cerbo GX (192.168.1.106)...
 
 ## ⚙️ Configuration & Privacy (`config.json`)
 
-All private credentials, IPs, and geolocation coordinates are isolated from git tracking using `.gitignore`. Copy the example template to create your local configuration:
+All private credentials, IPs, and geolocation coordinates are isolated from git tracking using `.gitignore`:
 
 ```bash
 cp config.example.json config.json
@@ -150,30 +180,12 @@ Example `config.json`:
 
 ## 🚀 Installation & Deployment
 
-### 1. Requirements:
-- Python 3.9+
-- `uv` or `pip` package manager
-- Linux OS with `systemd --user` support
-
-### 2. One-Step Installation:
 ```bash
 git clone git@github.com:CasimirVictoria/caseta-guardian.git
 cd caseta-guardian
-cp config.example.json config.json # Edit with your local network settings
+cp config.example.json config.json
 ./install.sh
 ```
-
-The `./install.sh` script:
-1. Installs and registers the `caseta-guardian.service` under user systemd.
-2. Enables automatic startup on system boot (`systemctl --user enable`).
-3. Creates the global CLI wrapper link `~/.local/bin/caseta`.
-
----
-
-## 📱 Mobile Push Notifications (Ntfy)
-- **Early Battery Warning:** Notification at **`67% SoC`** alerting that HVAC will shut down at 65%.
-- **Emergency Cutoff:** Priority 5 audible alert at **`65% SoC`**.
-- **Mode Transitions:** Instant notification when MultiPlus islands into Mode 2 or reconnects to grid Mode 3.
 
 ---
 

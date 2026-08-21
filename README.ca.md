@@ -6,6 +6,38 @@ Dimoni natiu en Python 3 i tauler de telemetria en consola CLI per a la gestió 
 
 ---
 
+## 🏗️ Arquitectura: Migració de Node-RED al Cerbo GX cap a un Portàtil Sempre Encès
+
+Aquest projecte neix d'una evolució arquitectònica clau: **migrar la lògica pesada de Node-RED que corria al maquinari integrat del Cerbo GX cap a un script natiu i lleuger en Python 3 que s'executa en un portàtil / servidor Linux sempre encès a la Caseta**.
+
+```
+  ┌────────────────────────────────────────┐       MQTT (LAN / <1 ms)       ┌────────────────────────────────────────┐
+  │     💻 PORTÀTIL LINUX (SEMPRE ENCÈS)   │ ─────────────────────────────> │            🎛️ CERBO GX (VENUS OS)      │
+  │ • caseta_guardian.py (dimoni systemd)  │ <───────────────────────────── │ • Broker FlashMQ (C++)                 │
+  │ • Model meteorològic Open-Meteo        │                                │ • Comunicació CANbus BMS (Bateria)     │
+  │ • Avisos Ntfy i IR Tuya per a l'aire   │                                │ • Comptador Solar Modbus (Huawei)      │
+  │ • 15 MB RAM | <0.1% CPU                │                                │ • Firmware Pur de Fàbrica (46.8 ºC)    │
+  └────────────────────────────────────────┘                                └────────────────────────────────────────┘
+```
+
+### 🌟 Per què aquesta Arquitectura Distribuïda és Molt Superior:
+
+1. 🪶 **Cerbo GX Pur i Intocable de Fàbrica:**
+   - S'allibera el Cerbo de l'entorn pesat de Node.js, paletes npm fràgils i càrrega de servidors web.
+   - Es dedica exclusivament a la seua feina de maquinari: **mesura d'alta precisió, gestió de busos industrials (CANbus / RS485) i seguretat de l'inversor**.
+   - **Immunitat total a actualitzacions:** Pots actualitzar Venus OS a qualsevol nova versió oficial sense por a trencar cap flux ni perdre configuracions.
+
+2. ❄️ **Alliberament Brutal de Memòria i Temperatura:**
+   - **Memòria RAM Lliure al Cerbo:** El consum cau de ~450 MB amb Node-RED a només **`270 MB`** (deixant **més de 720 MB de RAM lliures**!).
+   - **Temperatura de la CPU:** La CPU del Cerbo GX ha baixat de 55 ºC – 58 ºC a només **`46.8 ºC`** *(entre 8 i 11 ºC més fresc a ple agost a la Safor!)*.
+   - **Consum al Portàtil:** El dimoni de Python al portàtil consumeix només **`15 MB` de RAM** i **`< 0.1%` de CPU**.
+
+3. 🛠️ **Simplicitat Unix i Màxima Sobirania:**
+   - Codi en Python 3 estàndard, net, transparent i directament editable.
+   - Registres i logs immediats amb `journalctl --user -u caseta-guardian -f`.
+
+---
+
 ## 🌟 La Filosofia del Projecte: El "Sant Grial" de l'Autoconsum
 
 El projecte resol el gran dilema de l'energia solar combinant **el millor dels sistemes aïllats amb el millor dels sistemes connectats a xarxa**:
@@ -92,7 +124,7 @@ caseta
 
 ---
 
-## ⚙️ Configuració (`config.json`)
+## ⚙️ Configuració i Privacitat (`config.json`)
 ```json
 {
   "cerbo_ip": "192.168.1.100",
@@ -108,10 +140,15 @@ caseta
 
 ---
 
-## 🚀 Instal·lació
+## 🚀 Instal·lació i Desplegament
 ```bash
 git clone git@github.com:CasimirVictoria/caseta-guardian.git
 cd caseta-guardian
 cp config.example.json config.json
 ./install.sh
 ```
+
+---
+
+## 📜 Llicència
+Projecte lliure sota llicència MIT. Dissenyat per a màxima resiliència, autarquia i sostenibilitat domèstica.
