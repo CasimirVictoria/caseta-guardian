@@ -1,90 +1,92 @@
 # 🛡️ Caseta Guardian - Victron ESS & Battery Health Manager
 
-Dimoni natiu en Python 3 i tauler de telemetria en consola CLI per a la gestió energètica autònoma, protecció química de la bateria LiFePO4 (Pylontech US3000C / US5000), resiliència SAI i climatització intel·ligent d'una instal·lació **Victron ESS** (MultiPlus-II 24/3000 o 48/3000, Cerbo GX, Inversor Solar en AC-Out).
+[🇬🇧 English Version](README.md) | [🇦🇩/🇪🇸 Versió en Català](README.ca.md)
+
+Lightweight native Python 3 systemd daemon and real-time CLI telemetry dashboard for autonomous energy management, LiFePO4 battery health protection (Pylontech US3000C / US5000), UPS resilience, and smart HVAC control on **Victron ESS installations** (MultiPlus-II 24/3000 or 48/3000, Cerbo GX, AC-Out Solar Inverters).
 
 ---
 
-## 🌟 La Filosofia del Projecte: El "Sant Grial" de l'Autoconsum
+## 🌟 Philosophy: The "Holy Grail" of Solar Autoconsumption
 
-El projecte resol el gran dilema de l'energia solar combinant **el millor dels sistemes aïllats amb el millor dels sistemes connectats a xarxa**:
+This project solves the fundamental trade-off of residential solar by combining **the best of off-grid islanded systems with the best of grid-tied architectures**:
 
 ```
   ┌────────────────────────────────────────┐  ┌────────────────────────────────────────┐
-  │      🏝️ EL MILLOR DE L'AÏLLADA         │  │       🔌 EL MILLOR DE LA XARXA         │
+  │         🏝️ BEST OF OFF-GRID            │  │          🔌 BEST OF ON-GRID            │
   ├────────────────────────────────────────┤  ├────────────────────────────────────────┤
-  │ • Zero Abocament (Zero Regal 100%).    │  │ • Reconnexió en 2 mil·lisegons.        │
-  │ • El MultiPlus controla la freqüència  │  │ • Suport de xarxa per a consums grans  │
-  │   (50.2 - 52.7 Hz) i frena el solar.   │    (PowerAssist per a cafetera, forn).    │
-  │ • Autarquia i independència total.     │  │ • Zero risc de quedar-se a zero.       │
+  │ • Zero Grid Export (100% Zero-Feed-in) │  │ • Millisecond Grid Reconnection (2ms). │
+  │ • MultiPlus controls AC frequency      │  │ • Utility grid assists on heavy loads  │
+  │   (50.2 - 52.7 Hz) to throttle PV.     │    (PowerAssist for oven, coffee machine).│
+  │ • True energy autonomy and resilience. │  │ • Zero risk of running out of power.   │
   └────────────────────────────────────────┘  └────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔋 El Principi de la "Bateria com a Coixí i SAI (Zero Cicles Profunds)"
+## 🔋 The "Battery as a Buffer & UPS (Zero Deep Cycling)" Principle
 
-A diferència dels sistemes aïllats convencionals que buiden la bateria cada dia (100% $\rightarrow$ 20%), el sistema utilitza la bateria exclusivament com a **coixí dinàmic i SAI d'emergència**:
+Unlike conventional off-grid setups that cycle the battery deeply every single day (100% $\rightarrow$ 20%), this system operates the battery exclusively as a **dynamic power buffer and an emergency UPS (SAI)**:
 
 ```
   100% SoC  ───────┐
-                   │  🟢 ZONA DE COIXÍ DINÀMIC (20% – 30% de marge):
-                   │     • Absorbeix els pics solars de migdia a cost zero.
-                   │     • Amortitza l'arrencada de la cafetera o el microones.
+                   │  🟢 DYNAMIC BUFFER ZONE (20% – 30% shallow margin):
+                   │     • Absorbs midday solar peaks at zero cost.
+                   │     • Buffers inductive surges (coffee maker, microwave).
    70% - 80% SoC ──┴───────────────────────────────────────────────────────
                    │
-                   │  🛡️ ZONA INTOCABLE DE SAI D'EMERGÈNCIA (70% – 80%):
-                   │     • Més de 2,2 a 2,5 kWh nets sempre guardats.
-                   │     • SAI instantani (0 ms) per si cau la línia del carrer.
-                   │     • Zero cicles de descàrrega profunda (>20.000 cicles / >30 anys).
+                   │  🛡️ UNTOUCHABLE EMERGENCY UPS (SAI) ZONE (70% – 80%):
+                   │     • Over 2.2 – 2.5 kWh net capacity always reserved.
+                   │     • Instant 0 ms UPS switchover during grid blackouts.
+                   │     • Zero deep degradation cycling (>20,000 cycles / >30 years).
     0% SoC  ───────┘
 ```
 
 ---
 
-## 🏛️ Les 4 Lleis Fonamentals de Prioritat
+## 🏛️ The 4 Fundamental Priority Laws
 
 ```
   ┌────────────────────────────────────────────────────────────────────────┐
-  │ 1. 🛡️ SALUT DE LA BATERIA (Prioritat 0)                               │
-  │    • Top-Balancing nocturn al 100% aprofitant tarifa supervall.        │
-  │    • Reconnexió immediata a xarxa si la descàrrega supera 15 A         │
-  │      (>750 W) durant >5 s o si el SoC baixa del 80% en mode aïllat.    │
-  │    • Escut de Seguretat Climatització: Apagada automàtica de l'aire     │
-  │      condicionat per IR si el SoC baixa del 65%.                       │
+  │ 1. 🛡️ BATTERY CHEMICAL HEALTH (Priority 0)                             │
+  │    • Overnight 100% Top-Balancing using off-peak electricity rates.    │
+  │    • Instant grid reconnection if discharge exceeds 15 A (>750 W)      │
+  │      for >5 s or if SoC drops below 80% in islanded Mode 2.            │
+  │    • HVAC Emergency Cutoff: Automatic IR shutdown of air conditioning  │
+  │      if SoC drops below 65% to protect the UPS reserve.                │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 2. 🔌 RESILIÈNCIA I SAI (Prioritat 1)                                  │
-  │    • Consulta meteorològica Open-Meteo cada 30 minuts.                 │
-  │    • Si detecta onada de calor extrema (Tmax >= 38ºC o T21h >= 31ºC)   │
-  │      o tensió baixa de xarxa (<195V), blinda el sòl al 95% – 100%.     │
+  │ 2. 🔌 RESILIENCE & UPS BACKUP (Priority 1)                             │
+  │    • Automated weather modeling via Open-Meteo API every 30 minutes.   │
+  │    • High Blackout Risk trigger (Tmax >= 38ºC, T21h >= 31ºC, or low    │
+  │      grid voltage <195V) locks the reserve floor to 95% – 100%.        │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 3. 🏝️ ZERO REGAL (Prioritat 2)                                         │
-  │    • Commuta a Inverter Only (Mode 2) només si: SoC > 84%, injecció    │
-  │      > 100 W durant més de 30 segons, i bateria en repòs (<2 A).       │
-  │    • El MultiPlus puja la freqüència de CA per frenar el solar.        │
+  │ 3. 🏝️ ZERO GRID FEED-IN (Priority 2)                                  │
+  │    • Switches to Inverter Only (Mode 2) only when: SoC > 84%, export   │
+  │      > 100 W for >30 s, and battery is resting (<2 A discharge).       │
+  │    • MultiPlus shifts AC frequency to throttle the PV inverter.        │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 4. ☀️ MÀXIM APROFITAMENT SOLAR (Prioritat 3)                            │
-  │    • Cicle Circadiari 24h:                                             │
-  │      - 00:01h a 07:00h: Sòl al 100% (Top-balancing i SAI nocturn).     │
-  │      - 07:00h a 17:00h: Sòl al 70% (Espai buit per absorbir sol).      │
-  │      - 17:00h a 20:00h: Dèficit de tarda -> Puja automàticament a 80%  │
-  │        per preservar la reserva abans de la nit.                       │
+  │ 4. ☀️ MAXIMUM SOLAR HARVEST (Priority 3)                               │
+  │    • 24-Hour Circadian Schedule:                                       │
+  │      - 00:01h - 07:00h: Minimum SoC = 100% (Top-balancing & max UPS).   │
+  │      - 07:00h - 17:00h: Minimum SoC = 70% (Headroom to absorb sun).    │
+  │      - 17:00h - 20:00h: Afternoon Deficit -> Automatically raises to   │
+  │        80% when consumption exceeds solar to preserve the night reserve│
   └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## ⚡ Protecció Mecànica del Relé i Física del Corrent
+## ⚡ Mechanical Relay Protection & Current Physics
 
-- **Relé Sobredimensionat:** El relé intern del MultiPlus-II és de **`32 A` (7.3 kW)**. Com que la línia només demana **`5 A` (1.15 kW)**, treballa al **`15%` de càrrega**.
-- **Física d'Arc ($I^2$):** $(5/32)^2 = 0.024 \implies \mathbf{40\text{ vegades menys estrès d'arc}}$ als contactes de plata.
-- **Commutació per Pas per Zero (*Zero-Cross*):** El xip de Victron sincronitza l'obertura i tancament quan la tensió creua els $0\text{ V}$.
-- **Histèresi Obligatòria:** Mínim **`5 minuts (300 s)`** entre canvis d'estat de relé.
+- **Oversized Industrial Relay:** MultiPlus-II features an internal **`32 A` (7.3 kW)** transfer relay. When limited to **`5 A` (1.15 kW)** grid current, the contacts operate at only **`15%` nominal load**.
+- **Arc Stress Physics ($I^2$):** $(5/32)^2 = 0.024 \implies \mathbf{40\times\text{ less electrical arc erosion}}$ on the silver contacts.
+- **Zero-Cross Switching:** Victron DSP synchronizes contact opening and closing precisely at the $0\text{ V}$ AC waveform crossing.
+- **Mandatory Hysteresis:** Minimum **`5 minutes (300 s)`** lockout between relay state changes to completely eliminate contact chattering.
 
 ---
 
-## 💻 Tauler de Control Ràpid en Terminal (`caseta`)
+## 💻 Real-Time CLI Dashboard (`caseta`)
 
-El projecte inclou una comanda de terminal d'alta velocitat que llegeix la telemetria en directe des del Cerbo GX i la memòria cau d'Open-Meteo en **0 mil·lisegons**:
+The project includes an ultra-fast terminal telemetry tool that reads live Victron D-Bus/MQTT data and cached weather forecasts in **0 milliseconds**:
 
 ```bash
 $ caseta
@@ -122,15 +124,15 @@ Connectant a Cerbo GX (192.168.1.106)...
 
 ---
 
-## ⚙️ Configuració i Privacitat (`config.json`)
+## ⚙️ Configuration & Privacy (`config.json`)
 
-El projecte està completament separat de dades privades mitjançant `.gitignore`. Pots copiar la plantilla d'exemple i personalitzar les teues dades locals:
+All private credentials, IPs, and geolocation coordinates are isolated from git tracking using `.gitignore`. Copy the example template to create your local configuration:
 
 ```bash
 cp config.example.json config.json
 ```
 
-Contingut de `config.json`:
+Example `config.json`:
 ```json
 {
   "cerbo_ip": "192.168.1.100",
@@ -146,33 +148,34 @@ Contingut de `config.json`:
 
 ---
 
-## 🚀 Instal·lació i Desplegament
+## 🚀 Installation & Deployment
 
-### 1. Requisits:
-- Python 3.9 o superior
-- Gestor de paquets `uv` o `pip`
-- Sistema operatiu Linux (amb suport `systemd --user`)
+### 1. Requirements:
+- Python 3.9+
+- `uv` or `pip` package manager
+- Linux OS with `systemd --user` support
 
-### 2. Instal·lació en 1 sol pas:
+### 2. One-Step Installation:
 ```bash
-git clone <url-del-repositori>
+git clone git@github.com:CasimirVictoria/caseta-guardian.git
 cd caseta-guardian
+cp config.example.json config.json # Edit with your local network settings
 ./install.sh
 ```
 
-El script `./install.sh`:
-1. Copia i activa el servei d'usuari `caseta-guardian.service`.
-2. Habilita l'inici automàtic en arrencar el sistema (`systemctl --user enable`).
-3. Crea l'enllaç executable per a la comanda `caseta` a `~/.local/bin/caseta`.
+The `./install.sh` script:
+1. Installs and registers the `caseta-guardian.service` under user systemd.
+2. Enables automatic startup on system boot (`systemctl --user enable`).
+3. Creates the global CLI wrapper link `~/.local/bin/caseta`.
 
 ---
 
-## 📱 Notificacions Push al Mòbil (Ntfy)
-- **Alerta Precoç de Bateria:** Notificació al **`67 % SoC`** avisant que s'apagarà l'aire al 65%.
-- **Apagada d'Emergència:** Alerta Prioritat 5 al **`65 % SoC`**.
-- **Canvi de Mode:** Notificació quan el MultiPlus entra en mode aïllat o reconnecta xarxa.
+## 📱 Mobile Push Notifications (Ntfy)
+- **Early Battery Warning:** Notification at **`67% SoC`** alerting that HVAC will shut down at 65%.
+- **Emergency Cutoff:** Priority 5 audible alert at **`65% SoC`**.
+- **Mode Transitions:** Instant notification when MultiPlus islands into Mode 2 or reconnects to grid Mode 3.
 
 ---
 
-## 📜 Llicència
-Projecte lliure sota llicència MIT. Dissenyat per a màxima resiliència, autarquia i sostenibilitat domèstica.
+## 📜 License
+Open source under the MIT License. Designed for maximum resilience, self-sufficiency, and battery longevity.
