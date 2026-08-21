@@ -7,7 +7,7 @@ JERARQUIA DE PRIORITATS:
 1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn, limitació corrent, escut 65%).
 2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva nocturna 80-100%, alerta calor 95%).
 3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
-4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal a les 07:00h al 70-80%).
+4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% i pujada a 80% en dèficit de tarda).
 """
 
 import json
@@ -98,6 +98,7 @@ class CasetaGuardian:
         # Previsió Solar & Clima
         self.today_kwh_est = 7.0
         self.tomorrow_kwh_est = 7.0
+        self.remaining_kwh_today = 5.0
         self.max_temp_today = 32.0
         self.sunset_temp = 28.0
         self.blackout_risk = 20
@@ -144,7 +145,7 @@ class CasetaGuardian:
             log.warning(f"Comanda Tuya (emissor IR): {e}")
 
     def sync_cerbo_min_soc(self):
-        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora i el risc climàtic."""
+        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora, balanç energètic i clima."""
         if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
             return
         
@@ -154,24 +155,33 @@ class CasetaGuardian:
         if 0 <= current_hour < 7:
             target = 100.0
             phase_name = "🌙 Nit Supervall (100% Top-Balancing & SAI Màxim)"
+            
         # 2. 🔥 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
         elif self.blackout_risk >= 60:
             target = 95.0
             phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
+            
         # 3. ⚠️ Alerta de Calor Moderada (Risc >= 30%)
         elif self.blackout_risk >= 30:
             target = 85.0
             phase_name = "⚠️ Calor Moderada (85% Reserva Preventiva)"
-        # 4. ☀️ Dia Assolellat Normal (07:00h a 19:59h):
-        # Allibera espai (70%) perquè el sol del migdia entri net a la bateria
+            
+        # 4. ☀️ Franja Diürna (07:00h a 19:59h):
         elif 7 <= current_hour < 20:
-            if self.today_kwh_est >= 5.0:
+            # Si és de vesprada (>=17h) o queda poc sol (<1.5 kWh) i el consum supera el sol sostingudament:
+            is_afternoon_deficit = (current_hour >= 17 or self.remaining_kwh_today < 1.5) and (self.ac_loads > (self.pv_p + 150.0))
+            
+            if is_afternoon_deficit:
+                target = 80.0
+                phase_name = "🌇 Dèficit Solar de Tarda (80% per preservar la nit)"
+            elif self.today_kwh_est >= 5.0 and current_hour < 17:
                 target = 70.0
                 phase_name = "☀️ Dia Radiant (70% per absorbir excedent solar)"
             else:
                 target = 80.0
-                phase_name = "☁️ Dia Variable (80% Coixí Solar)"
-        # 5. 🌆 Vespre (20:00h a 23:59h): Transició al descans abans de la càrrega de matinada
+                phase_name = "☁️ Dia Variable / Tarda (80% Coixí Solar)"
+                
+        # 5. 🌆 Vespre (20:00h a 23:59h): Coixí de transició abans de la nit
         else:
             target = 80.0
             phase_name = "🌆 Vespre (80% Manteniment de SAI)"
@@ -206,8 +216,10 @@ class CasetaGuardian:
             rads = hourly.get("global_tilted_irradiance", hourly.get("direct_radiation", []))
             
             today_str = time.strftime("%Y-%m-%d")
+            current_hour = int(time.strftime("%H"))
             today_kwh = 0.0
             tomorrow_kwh = 0.0
+            remaining_kwh = 0.0
             max_temp = 25.0
             sunset_temp = 25.0
             
@@ -215,6 +227,9 @@ class CasetaGuardian:
                 est_w = min(1350, max(0, (rad / 1000.0) * 1350 * 0.82))
                 if t.startswith(today_str):
                     today_kwh += est_w / 1000.0
+                    h_int = int(t.split("T")[1][:2])
+                    if h_int >= current_hour:
+                        remaining_kwh += est_w / 1000.0
                     if temp > max_temp:
                         max_temp = temp
                     if "T21:" in t:
@@ -224,6 +239,7 @@ class CasetaGuardian:
             
             self.today_kwh_est = today_kwh
             self.tomorrow_kwh_est = tomorrow_kwh
+            self.remaining_kwh_today = remaining_kwh
             self.max_temp_today = max_temp
             self.sunset_temp = sunset_temp
             
@@ -247,6 +263,7 @@ class CasetaGuardian:
                 "timestamp": now,
                 "today_kwh": round(today_kwh, 2),
                 "tomorrow_kwh": round(tomorrow_kwh, 2),
+                "remaining_kwh_today": round(remaining_kwh, 2),
                 "max_temp_today": round(max_temp, 1),
                 "sunset_temp": round(sunset_temp, 1),
                 "blackout_risk": self.blackout_risk,
@@ -255,7 +272,7 @@ class CasetaGuardian:
             with open(FORECAST_CACHE_FILE, "w") as f:
                 json.dump(cache_payload, f)
 
-            log.info(f"📊 Open-Meteo: Sol previst = {today_kwh:.1f} kWh | Màx = {max_temp:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc:.0f}%")
+            log.info(f"📊 Open-Meteo: Sol total = {today_kwh:.1f} kWh (Queden {remaining_kwh:.1f} kWh) | Màx = {max_temp:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc:.0f}%")
         except Exception as e:
             log.warning(f"Avís consultant Open-Meteo: {e}")
 
