@@ -93,6 +93,7 @@ class CasetaGuardian:
         self.pv_p = 0.0
         self.ac_loads = 200.0
         self.vebus_mode = 3 # 3 = ON, 2 = Inverter Only, 1 = Charger Only, 4 = OFF
+        self.cerbo_min_soc = 70.0
         
         # Previsió Solar & Clima
         self.today_kwh_est = 7.0
@@ -100,7 +101,8 @@ class CasetaGuardian:
         self.max_temp_today = 32.0
         self.sunset_temp = 28.0
         self.blackout_risk = 20
-        self.target_reserve_soc = 80.0
+        self.target_reserve_soc = 70.0
+        self.last_applied_min_soc = None
         
         # Comptadors de Temps & Histèresi
         self.last_mode_switch_time = 0.0
@@ -141,10 +143,37 @@ class CasetaGuardian:
         except Exception as e:
             log.warning(f"Comanda Tuya (emissor IR): {e}")
 
+    def sync_cerbo_min_soc(self):
+        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons el risc climàtic."""
+        if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
+            return
+        
+        current_hour = int(time.strftime("%H"))
+        # De dia (07:00 a 20:00h): Si el dia és bo, permet baixar al 70% per absorbir sol
+        # De nit (20:00 a 07:00h) o amb risc de calor: manté sòl de SAI a 80-95%
+        if self.blackout_risk >= 60:
+            target = 95.0
+        elif self.blackout_risk >= 30:
+            target = 85.0
+        elif 7 <= current_hour < 20 and self.today_kwh_est >= 5.0:
+            target = 70.0
+        else:
+            target = 80.0
+
+        self.target_reserve_soc = target
+
+        if self.last_applied_min_soc != target:
+            topic = f"W/{self.portal_id}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
+            payload = json.dumps({"value": target})
+            self.client.publish(topic, payload)
+            log.info(f"⚙️ Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% (Risc: {self.blackout_risk}%, Sol previst: {self.today_kwh_est:.1f} kWh)")
+            self.last_applied_min_soc = target
+
     def update_open_meteo_forecast(self):
         """Consulta Open-Meteo per a radiació i càlcul de risc d'apagada."""
         now = time.time()
         if now - self.last_openmeteo_fetch < 1800 and os.path.exists(FORECAST_CACHE_FILE):
+            self.sync_cerbo_min_soc()
             return
         
         self.last_openmeteo_fetch = now
@@ -196,13 +225,7 @@ class CasetaGuardian:
             elif self.grid_v < 205: risk += 10
             
             self.blackout_risk = min(100, max(0, risk))
-            
-            if self.blackout_risk >= 60:
-                self.target_reserve_soc = 95.0
-            elif self.blackout_risk >= 30:
-                self.target_reserve_soc = 85.0
-            else:
-                self.target_reserve_soc = 80.0
+            self.sync_cerbo_min_soc()
                 
             cache_payload = {
                 "timestamp": now,
@@ -216,7 +239,7 @@ class CasetaGuardian:
             with open(FORECAST_CACHE_FILE, "w") as f:
                 json.dump(cache_payload, f)
 
-            log.info(f"📊 Open-Meteo: Sol previst = {today_kwh:.1f} kWh | Màx = {max_temp:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc}%")
+            log.info(f"📊 Open-Meteo: Sol previst = {today_kwh:.1f} kWh | Màx = {max_temp:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc:.0f}%")
         except Exception as e:
             log.warning(f"Avís consultant Open-Meteo: {e}")
 
@@ -298,8 +321,8 @@ class CasetaGuardian:
         """Processa missatges MQTT de telemetria en temps real."""
         topic = msg.topic
         
-        # Auto-descobriment del Portal ID si està amb el comodí '+'
-        if self.portal_id == "c0619ab2xxxx" and topic.startswith("N/"):
+        # Auto-descobriment del Portal ID
+        if self.portal_id in ("c0619ab2xxxx", "+") and topic.startswith("N/"):
             parts = topic.split("/")
             if len(parts) > 1 and parts[1] not in ("+", "#"):
                 self.portal_id = parts[1]
@@ -334,11 +357,12 @@ class CasetaGuardian:
             self.ac_loads = float(val)
         elif topic.endswith("/vebus/276/Mode"):
             self.vebus_mode = int(val)
+        elif topic.endswith("/Settings/CGwacs/BatteryLife/MinimumSocLimit"):
+            self.cerbo_min_soc = float(val)
 
     def run(self):
         """Inicia el dimoni guardià."""
         log.info(f"🚀 Iniciant Caseta Guardian (Cerbo IP: {CERBO_IP})...")
-        self.update_open_meteo_forecast()
         
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2 if hasattr(mqtt, "CallbackAPIVersion") else None)
         self.client.on_message = self.on_mqtt_message
@@ -359,7 +383,8 @@ class CasetaGuardian:
             f"N/+/vebus/276/Ac/ActiveIn/L1/V",
             f"N/+/pvinverter/31/Ac/Power",
             f"N/+/system/0/Ac/Consumption/L1/Power",
-            f"N/+/vebus/276/Mode"
+            f"N/+/vebus/276/Mode",
+            f"N/+/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
         ]
         
         for t in topics:
@@ -367,8 +392,8 @@ class CasetaGuardian:
             
         self.client.loop_start()
         self.client.publish(f"R/{self.portal_id}/keepalive", "")
-        self.client.publish("R/+/keepalive", "")
         
+        self.update_open_meteo_forecast()
         log.info("🛡️ Guardià en línia i vigilant telemetria en directe!")
         
         try:
