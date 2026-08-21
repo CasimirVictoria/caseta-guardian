@@ -122,6 +122,43 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
 caseta
 ```
 
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
+│    • Estat de Càrrega (SoC):  80.0%  [Descarregant]                          │
+│    • Energia Disponible:      2.56 kWh actuals | 2.24 kWh útils (tall 10%)   │
+│    • Marge fins a Escut SAI:  0.48 kWh lliures (abans del sòl del 65%)       │
+│    • Tensió i Corrent:        49.40 V  |  -6.7 A (-330 W)                    │
+│    • Cel·les (Min / Màx):     3.259 V / 3.304 V (ΔV = 45 mV)                 │
+│    • Temperatura BMS:         32.6 ºC                                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                       │
+│    • Producció Solar Huawei:     7.7 W                                       │
+│    • Consum Casa (AC Loads):  1249.0 W                                       │
+│    • Freqüència de CA Caseta: 50.08 Hz                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                    │
+│    • Mode MultiPlus:          ON (Connectat a Xarxa)                         │
+│    • Tensió Xarxa L1:         210.4 V                                        │
+│    • Estat de la Xarxa:       Important del carrer (924 W)                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 📊 BALANÇ I ENERGIA D'AVUI (Acumulats)                                       │
+│    • Producció Solar Generada:  6.90 kWh (Pic màxim: 1079 W)                 │
+│    • Consum Total de la Casa:  13.77 kWh (Cobertura Solar: 50.1%)            │
+│    • Importat de Xarxa:         6.78 kWh | Exportat: 0.00 kWh (Zero Regal)   │
+│    • Cost Total Facturat d'Hui:  0.73 € (Tarifa 2.0TD - Tot inclòs)          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                            │
+│    • Sol Esperat (Hui / Demà): 7.5 kWh / 5.7 kWh                             │
+│    • Temp. Màx / Ocàs (21h):   32.3 ºC / 27.5 ºC                             │
+│    • Índex de Risc de Tall:    🟢 Risc Baix (Normal) (20%)                   │
+│    • Objectiu Reserva Nocturna:  85.0% de Bateria SAI                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+  Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT (systemd)
+```
+
+> **Nota sobre el Càlcul de Cost Econòmic:** El càlcul del cost en temps real està personalitzat matemàticament per a la tarifa 2.0TD específica d'aquesta instal·lació (*Imagina Energía* - potència contractada de 1,150 kW a P1 i P3, discriminació horària Punta/Pla/Vall, lloguer del comptador oficial i impostos regulats IEE 3,8% + IVA 10%). Els preus es poden adaptar lliurement al codi o a `config.json`.
+
 ---
 
 ## ⚙️ Configuració i Privacitat (`config.json`)

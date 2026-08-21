@@ -138,19 +138,27 @@ Connectant a Cerbo GX (192.168.1.106)...
 │    • Consum Casa (AC Loads):   911.4 W                                       │
 │    • Freqüència de CA Caseta: 50.08 Hz                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                   │
+│ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                    │
 │    • Mode MultiPlus:          ON (Connectat a Xarxa)                         │
-│    • Tensió Xarxa L1:         225.1 V                                        │
-│    • Estat de la Xarxa:       Equilibrada / Neutre (46 W)                    │
+│    • Tensió Xarxa L1:         210.4 V                                        │
+│    • Estat de la Xarxa:       Important del carrer (924 W)                   │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                          │
-│    • Sol Esperat (Hui / Demà): 7.6 kWh / 6.0 kWh                             │
-│    • Temp. Màx / Ocàs (21h):  32.5 ºC / 27.7 ºC                             │
-│    • Índex de Risc de Tall:   🟢 Risc Baix (Normal)       (20%)              │
-│    • Objectiu Reserva Nocturna: 70.0% de Bateria SAI                         │
+│ 📊 BALANÇ I ENERGIA D'AVUI (Acumulats)                                       │
+│    • Producció Solar Generada:  6.90 kWh (Pic màxim: 1079 W)                 │
+│    • Consum Total de la Casa:  13.77 kWh (Cobertura Solar: 50.1%)            │
+│    • Importat de Xarxa:         6.78 kWh | Exportat: 0.00 kWh (Zero Regal)   │
+│    • Cost Total Facturat d'Hui:  0.73 € (Tarifa 2.0TD - Tot inclòs)          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                            │
+│    • Sol Esperat (Hui / Demà): 7.5 kWh / 5.7 kWh                             │
+│    • Temp. Màx / Ocàs (21h):   32.3 ºC / 27.5 ºC                             │
+│    • Índex de Risc de Tall:    🟢 Risc Baix (Normal) (20%)                   │
+│    • Objectiu Reserva Nocturna:  85.0% de Bateria SAI                        │
 └──────────────────────────────────────────────────────────────────────────────┘
   Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT (systemd)
 ```
+
+> **Note on Economic & Cost Tracking:** The real-time cost calculation is tailored to the installation's specific Spanish 2.0TD contract (*Imagina Energía* - 1.150 kW contracted power for P1/P3, real-time Time-of-Use rates for Off-peak/Mid-peak/Peak periods, meter rental fees, and energy taxes IEE 3.8% + IVA 10%). Parameters can be adapted in code or configuration.
 
 ---
 
