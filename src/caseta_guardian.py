@@ -7,7 +7,7 @@ JERARQUIA DE PRIORITATS:
 1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn, limitació corrent, escut 65%).
 2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva nocturna 80-100%, alerta calor 95%).
 3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
-4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% i pujada a 80% en dèficit de tarda).
+4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i pujada a 80% a partir de les 16h).
 """
 
 import json
@@ -102,7 +102,7 @@ class CasetaGuardian:
         self.max_temp_today = 32.0
         self.sunset_temp = 28.0
         self.blackout_risk = 20
-        self.target_reserve_soc = 70.0
+        self.target_reserve_soc = 80.0
         self.last_applied_min_soc = None
         
         # Comptadors de Temps & Histèresi
@@ -168,13 +168,14 @@ class CasetaGuardian:
             
         # 4. ☀️ Franja Diürna (07:00h a 19:59h):
         elif 7 <= current_hour < 20:
-            # Si és de vesprada (>=17h) o queda poc sol (<1.5 kWh) i el consum supera el sol sostingudament:
-            is_afternoon_deficit = (current_hour >= 17 or self.remaining_kwh_today < 1.5) and (self.ac_loads > (self.pv_p + 150.0))
+            # A partir de les 16:00h (la producció cau però queda molta calor/clima per davant):
+            # Establim el sòl al 80% per reservar la bateria per a la nit.
+            is_afternoon = (current_hour >= 16) or (self.remaining_kwh_today < 2.0)
             
-            if is_afternoon_deficit:
+            if is_afternoon:
                 target = 80.0
-                phase_name = "🌇 Dèficit Solar de Tarda (80% per preservar la nit)"
-            elif self.today_kwh_est >= 5.0 and current_hour < 17:
+                phase_name = "🌇 Tarda / Coixí de Calor (80% per preservar la nit)"
+            elif self.today_kwh_est >= 5.0:
                 target = 70.0
                 phase_name = "☀️ Dia Radiant (70% per absorbir excedent solar)"
             else:
