@@ -119,10 +119,11 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
 ## 💻 Tauler de Control Ràpid en Terminal (`caseta`)
 
 ```bash
-caseta
-```
+$ caseta
 
-```text
+⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡
+Connectant a Cerbo GX (192.168.1.106)...
+
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
 │    • Estat de Càrrega (SoC):  80.0%  [Descarregant]                          │
