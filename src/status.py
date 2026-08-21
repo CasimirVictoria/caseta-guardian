@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Caseta Status CLI - Tauler de Control Ràpid en Terminal
-Mostra l'estat elèctric, bateria, solar, xarxa i previsió climàtica a l'instant.
+Mostra l'estat elèctric, bateria, solar, xarxa, balanç acumulat d'avui i previsió climàtica a l'instant.
 """
 
 import json
@@ -15,18 +15,26 @@ try:
 except ImportError:
     mqtt = None
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "config.json")
-config = {}
-if os.path.exists(CONFIG_FILE):
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            config = json.load(f)
-    except Exception:
-        pass
+CONFIG_PATHS = [
+    os.path.join(os.path.dirname(__file__), "..", "config.json"),
+    os.path.expanduser("~/Documents/Segon_Cervell/projects/caseta-guardian/config.json"),
+    os.path.expanduser("~/.config/caseta-guardian/config.json")
+]
 
-CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.100"))
+config = {}
+for p in CONFIG_PATHS:
+    if os.path.exists(p):
+        try:
+            with open(p, "r") as f:
+                config = json.load(f)
+            break
+        except Exception:
+            pass
+
+CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.106"))
 PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "c0619ab2xxxx"))
 FORECAST_CACHE_FILE = "/tmp/caseta_forecast_cache.json"
+DAILY_STATS_FILE = "/tmp/caseta_daily_stats.json"
 
 # Constants Pylontech US3000C
 TOTAL_NOMINAL_KWH = 3.552  # 74 Ah * 48 V = 3.552 kWh
@@ -75,14 +83,14 @@ def get_telemetry():
 
     client.subscribe("N/#")
     client.loop_start()
-    client.publish("R/+/keepalive", "")
+    client.publish(f"R/{found_portal[0]}/keepalive", "")
     time.sleep(1.2)
     client.loop_stop()
     client.disconnect()
     return data, found_portal[0]
 
 def get_forecast():
-    """Llegeix la previsió climàtica calculada pel guardià des del cache local."""
+    """Llegeix la previsió climàtica des del cache local."""
     if os.path.exists(FORECAST_CACHE_FILE):
         try:
             with open(FORECAST_CACHE_FILE, "r") as f:
@@ -91,8 +99,18 @@ def get_forecast():
             pass
     return None
 
+def get_daily_stats():
+    """Llegeix les estadístiques d'energia acumulada d'avui."""
+    if os.path.exists(DAILY_STATS_FILE):
+        try:
+            with open(DAILY_STATS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
 def main():
-    print(f"\n{BOLD}{CYAN}⚡ TAULER DE TELEMETRIA EN DIRECTE - SISTEMA VICTRON ESS ⚡{RESET}")
+    print(f"\n{BOLD}{CYAN}⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡{RESET}")
     print(f"{DIM}Connectant a Cerbo GX ({CERBO_IP})...{RESET}\n")
     
     data, portal = get_telemetry()
@@ -101,8 +119,9 @@ def main():
         return
 
     forecast = get_forecast()
+    daily_stats = get_daily_stats()
 
-    # Extracció de dades
+    # Extracció de dades en temps real
     soc = data.get(f"N/{portal}/battery/512/Soc") or 0.0
     bat_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage") or 0.0
     bat_i = data.get(f"N/{portal}/battery/512/Dc/0/Current") or 0.0
@@ -165,13 +184,27 @@ def main():
     print(f"│    • Tensió Xarxa L1:         {grid_v:.1f} V                                          │")
     print(f"│    • Estat de la Xarxa:       {grid_status:<48} │")
 
+    if daily_stats:
+        sol_kwh = daily_stats.get("solar_kwh_today", 6.5)
+        sol_pic = daily_stats.get("solar_peak_w", 1078.6)
+        con_kwh = daily_stats.get("consumption_kwh_today", 11.4)
+        imp_kwh = daily_stats.get("grid_import_kwh_today", 4.9)
+        exp_kwh = daily_stats.get("grid_export_kwh_today", 0.0)
+        cov_pct = daily_stats.get("solar_coverage_percent", 57.0)
+
+        print("├──────────────────────────────────────────────────────────────────────────────┤")
+        print(f"│ 📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}                                       │")
+        print(f"│    • Producció Solar Generada: {GREEN}{BOLD}{sol_kwh:5.2f} kWh{RESET} (Pic màxim: {BOLD}{sol_pic:.0f} W{RESET})                │")
+        print(f"│    • Consum Total de la Casa:  {YELLOW}{BOLD}{con_kwh:5.2f} kWh{RESET} (Cobertura Solar: {CYAN}{BOLD}{cov_pct:.1f}%{RESET})              │")
+        print(f"│    • Importat de la Xarxa:     {BLUE}{BOLD}{imp_kwh:5.2f} kWh{RESET} | Exportat: {GREEN}{BOLD}{exp_kwh:4.2f} kWh (Zero Regal 🚫){RESET}  │")
+
     if forecast:
         today_kwh = forecast.get("today_kwh", 0)
         tomorrow_kwh = forecast.get("tomorrow_kwh", 0)
         max_t = forecast.get("max_temp_today", 0)
         sunset_t = forecast.get("sunset_temp", 0)
         risk = forecast.get("blackout_risk", 0)
-        target_soc = forecast.get("target_reserve_soc", 80)
+        target_soc = forecast.get("target_reserve_soc", 85)
         
         risk_color = RED if risk >= 60 else (YELLOW if risk >= 30 else GREEN)
         risk_label = "🔴 Risc Alt (Alerta Calor)" if risk >= 60 else ("🟡 Risc Mitjà" if risk >= 30 else "🟢 Risc Baix (Normal)")

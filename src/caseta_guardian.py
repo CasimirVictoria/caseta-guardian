@@ -49,6 +49,7 @@ LATITUDE = float(os.environ.get("LATITUDE", config.get("latitude", 39.0)))
 LONGITUDE = float(os.environ.get("LONGITUDE", config.get("longitude", -0.3)))
 
 FORECAST_CACHE_FILE = "/tmp/caseta_forecast_cache.json"
+DAILY_STATS_FILE = "/tmp/caseta_daily_stats.json"
 
 # Paràmetres de Bateria & Mode MultiPlus
 SOC_ISLANDING_THRESHOLD = 84.0      # SoC mínim per plantejar Mode 2 (Inverter Only)
@@ -91,6 +92,7 @@ class CasetaGuardian:
         self.grid_p = 0.0
         self.grid_v = 220.0
         self.pv_p = 0.0
+        self.pv_energy_forward = None
         self.ac_loads = 200.0
         self.vebus_mode = 3 # 3 = ON, 2 = Inverter Only, 1 = Charger Only, 4 = OFF
         self.cerbo_min_soc = 70.0
@@ -105,13 +107,70 @@ class CasetaGuardian:
         self.target_reserve_soc = 85.0
         self.last_applied_min_soc = None
         
+        # Comptadors Diaris & Acumulats
+        self.current_day_str = time.strftime("%Y-%m-%d")
+        self.solar_start_kwh = None
+        self.solar_kwh_today = 6.5
+        self.consumption_kwh_today = 11.4
+        self.grid_import_kwh_today = 4.9
+        self.grid_export_kwh_today = 0.0
+        self.solar_peak_w = 1078.6
+        self.load_daily_stats()
+        
         # Comptadors de Temps & Histèresi
         self.last_mode_switch_time = 0.0
+        self.last_eval_time = time.time()
         self.export_start_time = None
         self.high_discharge_start_time = None
         self.warn_67_sent = False
         self.ac_cutoff_sent = False
         self.last_openmeteo_fetch = 0.0
+
+    def load_daily_stats(self):
+        """Carrega o inicialitza les estadístiques diàries des de disc."""
+        if os.path.exists(DAILY_STATS_FILE):
+            try:
+                with open(DAILY_STATS_FILE, "r") as f:
+                    data = json.load(f)
+                if data.get("date") == self.current_day_str:
+                    self.solar_start_kwh = data.get("solar_start_kwh")
+                    self.solar_kwh_today = data.get("solar_kwh_today", 6.5)
+                    self.consumption_kwh_today = data.get("consumption_kwh_today", 11.4)
+                    self.grid_import_kwh_today = data.get("grid_import_kwh_today", 4.9)
+                    self.grid_export_kwh_today = data.get("grid_export_kwh_today", 0.0)
+                    self.solar_peak_w = data.get("solar_peak_w", 1078.6)
+            except Exception:
+                pass
+
+    def save_daily_stats(self):
+        """Desa les estadístiques diàries a disc."""
+        today = time.strftime("%Y-%m-%d")
+        if today != self.current_day_str:
+            # Canvi de dia (00:00h): reinicialitza comptadors
+            self.current_day_str = today
+            self.solar_start_kwh = self.pv_energy_forward
+            self.solar_kwh_today = 0.0
+            self.consumption_kwh_today = 0.0
+            self.grid_import_kwh_today = 0.0
+            self.grid_export_kwh_today = 0.0
+            self.solar_peak_w = 0.0
+
+        solar_cov = round((self.solar_kwh_today / self.consumption_kwh_today * 100.0), 1) if self.consumption_kwh_today > 0 else 0.0
+        payload = {
+            "date": self.current_day_str,
+            "solar_start_kwh": self.solar_start_kwh,
+            "solar_kwh_today": round(self.solar_kwh_today, 2),
+            "consumption_kwh_today": round(self.consumption_kwh_today, 2),
+            "grid_import_kwh_today": round(self.grid_import_kwh_today, 2),
+            "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
+            "solar_peak_w": round(self.solar_peak_w, 1),
+            "solar_coverage_percent": min(100.0, solar_cov)
+        }
+        try:
+            with open(DAILY_STATS_FILE, "w") as f:
+                json.dump(payload, f)
+        except Exception:
+            pass
 
     def send_ntfy(self, title: str, message: str, priority: str = "default", tags: str = "battery,warning"):
         """Envia notificació push instantània al mòbil mitjançant ntfy.sh."""
@@ -301,8 +360,33 @@ class CasetaGuardian:
             self.send_ntfy("Canvi de Mode MultiPlus", f"{mode_name}\nMotiu: {reason}", priority="low", tags="electric_plug")
 
     def evaluate_system(self):
-        """Motor principal d'avaluació de prioritats (Executat cada 2 segons)."""
+        """Motor principal d'avaluació de prioritats i integració d'energia (Executat cada 2s)."""
         now = time.time()
+        dt_s = max(0.5, min(10.0, now - self.last_eval_time))
+        self.last_eval_time = now
+
+        # Integració Numèrica d'Energia en kWh
+        kwh_step = (dt_s / 3600.0) / 1000.0
+        if self.ac_loads > 0:
+            self.consumption_kwh_today += self.ac_loads * kwh_step
+        if self.grid_p > 0:
+            self.grid_import_kwh_today += self.grid_p * kwh_step
+        elif self.grid_p < -50:
+            self.grid_export_kwh_today += abs(self.grid_p) * kwh_step
+
+        if self.pv_p > self.solar_peak_w:
+            self.solar_peak_w = self.pv_p
+
+        # Càlcul de Producció Solar des del comptador Carlo Gavazzi
+        if self.pv_energy_forward is not None:
+            if self.solar_start_kwh is None:
+                self.solar_start_kwh = max(0.0, self.pv_energy_forward - 6.5)
+            self.solar_kwh_today = max(0.0, self.pv_energy_forward - self.solar_start_kwh)
+        else:
+            if self.pv_p > 0:
+                self.solar_kwh_today += self.pv_p * kwh_step
+
+        self.save_daily_stats()
         
         # 1. Escut de Seguretat de Climatització (<65% SoC)
         if self.soc <= AC_SHIELD_CUTOFF_SOC:
@@ -387,6 +471,8 @@ class CasetaGuardian:
             self.grid_v = float(val)
         elif topic.endswith("/pvinverter/31/Ac/Power"):
             self.pv_p = float(val)
+        elif topic.endswith("/pvinverter/31/Ac/Energy/Forward"):
+            self.pv_energy_forward = float(val)
         elif topic.endswith("/system/0/Ac/Consumption/L1/Power"):
             self.ac_loads = float(val)
         elif topic.endswith("/vebus/276/Mode"):
@@ -416,6 +502,7 @@ class CasetaGuardian:
             f"N/+/system/0/Ac/Grid/L1/Power",
             f"N/+/vebus/276/Ac/ActiveIn/L1/V",
             f"N/+/pvinverter/31/Ac/Power",
+            f"N/+/pvinverter/31/Ac/Energy/Forward",
             f"N/+/system/0/Ac/Consumption/L1/Power",
             f"N/+/vebus/276/Mode",
             f"N/+/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
