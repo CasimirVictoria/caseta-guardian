@@ -5,7 +5,7 @@ Instal·lació Victron ESS (Cerbo GX, MultiPlus-II, Pylontech US3000C, Huawei PV
 
 JERARQUIA DE PRIORITATS:
 1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn, limitació corrent, escut 65%).
-2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva nocturna 80%, alerta calor 95-100%).
+2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva nocturna 80-100%, alerta calor 95%).
 3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
 4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal a les 07:00h al 70-80%).
 """
@@ -144,21 +144,37 @@ class CasetaGuardian:
             log.warning(f"Comanda Tuya (emissor IR): {e}")
 
     def sync_cerbo_min_soc(self):
-        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons el risc climàtic."""
+        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora i el risc climàtic."""
         if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
             return
         
         current_hour = int(time.strftime("%H"))
-        # De dia (07:00 a 20:00h): Si el dia és bo, permet baixar al 70% per absorbir sol
-        # De nit (20:00 a 07:00h) o amb risc de calor: manté sòl de SAI a 80-95%
-        if self.blackout_risk >= 60:
+        
+        # 1. 🌙 Nit Supervall (00:01h a 06:59h): Top-Balancing i 100% de SAI a 7 cts/kWh
+        if 0 <= current_hour < 7:
+            target = 100.0
+            phase_name = "🌙 Nit Supervall (100% Top-Balancing & SAI Màxim)"
+        # 2. 🔥 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
+        elif self.blackout_risk >= 60:
             target = 95.0
+            phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
+        # 3. ⚠️ Alerta de Calor Moderada (Risc >= 30%)
         elif self.blackout_risk >= 30:
             target = 85.0
-        elif 7 <= current_hour < 20 and self.today_kwh_est >= 5.0:
-            target = 70.0
+            phase_name = "⚠️ Calor Moderada (85% Reserva Preventiva)"
+        # 4. ☀️ Dia Assolellat Normal (07:00h a 19:59h):
+        # Allibera espai (70%) perquè el sol del migdia entri net a la bateria
+        elif 7 <= current_hour < 20:
+            if self.today_kwh_est >= 5.0:
+                target = 70.0
+                phase_name = "☀️ Dia Radiant (70% per absorbir excedent solar)"
+            else:
+                target = 80.0
+                phase_name = "☁️ Dia Variable (80% Coixí Solar)"
+        # 5. 🌆 Vespre (20:00h a 23:59h): Transició al descans abans de la càrrega de matinada
         else:
             target = 80.0
+            phase_name = "🌆 Vespre (80% Manteniment de SAI)"
 
         self.target_reserve_soc = target
 
@@ -166,7 +182,7 @@ class CasetaGuardian:
             topic = f"W/{self.portal_id}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
             payload = json.dumps({"value": target})
             self.client.publish(topic, payload)
-            log.info(f"⚙️ Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% (Risc: {self.blackout_risk}%, Sol previst: {self.today_kwh_est:.1f} kWh)")
+            log.info(f"⚙️ Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% [{phase_name}]")
             self.last_applied_min_soc = target
 
     def update_open_meteo_forecast(self):
