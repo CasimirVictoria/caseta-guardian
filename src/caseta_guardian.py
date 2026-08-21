@@ -67,6 +67,13 @@ MIN_SWITCH_INTERVAL_S = 300.0       # Mínim 5 minuts entre commutacions de rel�
 AC_SHIELD_CUTOFF_SOC = 65.0         # Si SoC <= 65% -> Apaga l'aire automàticament
 AC_WARN_SOC = 67.0                  # Si SoC <= 67% -> Envia avís push al mòbil
 
+# Preus Contractats Imagina Energía (CUPS: ES0021000007582432JL - 1.150 kW)
+COST_FIX_DIARI = 0.170              # Potència P1 (0.117€) + P3 (0.026€) + Comptador (0.027€)
+PREU_P1_PUNTA = 0.177691            # 10-14h i 18-22h L-V
+PREU_P2_PLA = 0.103870              # 08-10h, 14-18h, 22-24h L-V
+PREU_P3_VALL = 0.069473             # 00-08h L-V i 24h Cap de setmana
+FACTOR_IMPOSTOS = 1.1418            # Impost Elèctric 3.8% + IVA 10%
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -115,6 +122,8 @@ class CasetaGuardian:
         self.grid_import_kwh_today = 4.9
         self.grid_export_kwh_today = 0.0
         self.solar_peak_w = 1078.6
+        self.grid_cost_energy_today = 0.45
+        self.cost_total_today = 0.71
         self.load_daily_stats()
         
         # Comptadors de Temps & Histèresi
@@ -125,6 +134,19 @@ class CasetaGuardian:
         self.warn_67_sent = False
         self.ac_cutoff_sent = False
         self.last_openmeteo_fetch = 0.0
+
+    def get_current_kwh_rate(self):
+        """Retorna el preu contractat per kWh segons la franja horària actual."""
+        t = time.localtime()
+        if t.tm_wday >= 5:
+            return PREU_P3_VALL
+        h = t.tm_hour
+        if 0 <= h < 8:
+            return PREU_P3_VALL
+        elif (10 <= h < 14) or (18 <= h < 22):
+            return PREU_P1_PUNTA
+        else:
+            return PREU_P2_PLA
 
     def load_daily_stats(self):
         """Carrega o inicialitza les estadístiques diàries des de disc."""
@@ -139,6 +161,8 @@ class CasetaGuardian:
                     self.grid_import_kwh_today = data.get("grid_import_kwh_today", 4.9)
                     self.grid_export_kwh_today = data.get("grid_export_kwh_today", 0.0)
                     self.solar_peak_w = data.get("solar_peak_w", 1078.6)
+                    self.grid_cost_energy_today = data.get("grid_cost_energy_today", 0.45)
+                    self.cost_total_today = data.get("cost_total_today", 0.71)
             except Exception:
                 pass
 
@@ -154,8 +178,13 @@ class CasetaGuardian:
             self.grid_import_kwh_today = 0.0
             self.grid_export_kwh_today = 0.0
             self.solar_peak_w = 0.0
+            self.grid_cost_energy_today = 0.0
+            self.cost_total_today = round(COST_FIX_DIARI * FACTOR_IMPOSTOS, 2)
 
         solar_cov = round((self.solar_kwh_today / self.consumption_kwh_today * 100.0), 1) if self.consumption_kwh_today > 0 else 0.0
+        subtotal = COST_FIX_DIARI + self.grid_cost_energy_today
+        self.cost_total_today = subtotal * FACTOR_IMPOSTOS
+
         payload = {
             "date": self.current_day_str,
             "solar_start_kwh": self.solar_start_kwh,
@@ -164,7 +193,9 @@ class CasetaGuardian:
             "grid_import_kwh_today": round(self.grid_import_kwh_today, 2),
             "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
             "solar_peak_w": round(self.solar_peak_w, 1),
-            "solar_coverage_percent": min(100.0, solar_cov)
+            "solar_coverage_percent": min(100.0, solar_cov),
+            "grid_cost_energy_today": round(self.grid_cost_energy_today, 4),
+            "cost_total_today": round(self.cost_total_today, 2)
         }
         try:
             with open(DAILY_STATS_FILE, "w") as f:
@@ -227,8 +258,6 @@ class CasetaGuardian:
             
         # 4. ☀️ Franja Diürna (07:00h a 19:59h):
         elif 7 <= current_hour < 20:
-            # A partir de les 16:00h (la calor continua però el sol cau):
-            # Blindem el sòl al 85% per garantir màxima resiliència i SAI.
             is_afternoon = (current_hour >= 16) or (self.remaining_kwh_today < 2.0)
             
             if is_afternoon:
@@ -365,12 +394,14 @@ class CasetaGuardian:
         dt_s = max(0.5, min(10.0, now - self.last_eval_time))
         self.last_eval_time = now
 
-        # Integració Numèrica d'Energia en kWh
+        # Integració Numèrica d'Energia en kWh i Cost
         kwh_step = (dt_s / 3600.0) / 1000.0
         if self.ac_loads > 0:
             self.consumption_kwh_today += self.ac_loads * kwh_step
         if self.grid_p > 0:
-            self.grid_import_kwh_today += self.grid_p * kwh_step
+            kwh_imported_step = self.grid_p * kwh_step
+            self.grid_import_kwh_today += kwh_imported_step
+            self.grid_cost_energy_today += kwh_imported_step * self.get_current_kwh_rate()
         elif self.grid_p < -50:
             self.grid_export_kwh_today += abs(self.grid_p) * kwh_step
 

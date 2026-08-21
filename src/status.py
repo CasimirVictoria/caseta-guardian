@@ -191,12 +191,14 @@ def main():
         imp_kwh = daily_stats.get("grid_import_kwh_today", 4.9)
         exp_kwh = daily_stats.get("grid_export_kwh_today", 0.0)
         cov_pct = daily_stats.get("solar_coverage_percent", 57.0)
+        cost_tot = daily_stats.get("cost_total_today", 0.71)
 
         print("├──────────────────────────────────────────────────────────────────────────────┤")
         print(f"│ 📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}                                       │")
         print(f"│    • Producció Solar Generada: {GREEN}{BOLD}{sol_kwh:5.2f} kWh{RESET} (Pic màxim: {BOLD}{sol_pic:.0f} W{RESET})                │")
         print(f"│    • Consum Total de la Casa:  {YELLOW}{BOLD}{con_kwh:5.2f} kWh{RESET} (Cobertura Solar: {CYAN}{BOLD}{cov_pct:.1f}%{RESET})              │")
         print(f"│    • Importat de la Xarxa:     {BLUE}{BOLD}{imp_kwh:5.2f} kWh{RESET} | Exportat: {GREEN}{BOLD}{exp_kwh:4.2f} kWh (Zero Regal 🚫){RESET}  │")
+        print(f"│    • Cost Total Facturat d'Hui: {MAGENTA}{BOLD}{cost_tot:5.2f} €{RESET} (Tarifa 2.0TD - Tot inclòs)           │")
 
     if forecast:
         today_kwh = forecast.get("today_kwh", 0)
