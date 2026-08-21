@@ -6,9 +6,11 @@ Mostra l'estat elèctric, bateria, solar, xarxa, balanç acumulat d'avui i previ
 
 import json
 import os
+import re
 import ssl
 import sys
 import time
+import unicodedata
 
 try:
     import paho.mqtt.client as mqtt
@@ -53,6 +55,31 @@ BLUE = "\033[94m"
 MAGENTA = "\033[95m"
 RESET = "\033[0m"
 DIM = "\033[2m"
+
+BOX_WIDTH = 76
+
+def visible_width(s: str) -> int:
+    """Calcula l'amplada real en columnes del terminal (ignorant colors ANSI i mesurant caràcters amples/emojis)."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    clean = ansi_escape.sub('', s)
+    width = 0
+    for char in clean:
+        if char == '\ufe0f': # selector de variació unicode (amplada 0)
+            continue
+        code = ord(char)
+        if (0x1F300 <= code <= 0x1FAFF) or (0x2600 <= code <= 0x27BF) or (0x2B50 <= code <= 0x2B55):
+            width += 2
+        elif unicodedata.east_asian_width(char) in ('W', 'F'):
+            width += 2
+        else:
+            width += 1
+    return width
+
+def box_line(content: str) -> str:
+    """Afegeix espais de farcit perquè la vora dreta '│' quede 100% alineada."""
+    vw = visible_width(content)
+    pad = max(0, BOX_WIDTH - vw)
+    return f"│ {content}{' ' * pad} │"
 
 def get_telemetry():
     if mqtt is None:
@@ -164,25 +191,27 @@ def main():
     else:
         grid_status = f"{GREEN}Equilibrada / Neutre ({grid_p:.0f} W){RESET}"
 
-    # Renderitzat del Panell Visual
-    print("┌──────────────────────────────────────────────────────────────────────────────┐")
-    print(f"│ 🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}                        │")
-    print(f"│    • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc_str:<7}{RESET} [{bat_state}]                        │")
-    print(f"│    • Energia Disponible:      {BOLD}{kwh_actual:.2f} kWh{RESET} actuals | {GREEN}{kwh_fins_tall:.2f} kWh útils (tall 10%){RESET}       │")
-    print(f"│    • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_marge_sai:.2f} kWh lliures{RESET} (abans del sòl del 65%)                │")
-    print(f"│    • Tensió i Corrent:        {bat_v:.2f} V  |  {bat_i_str} ({bat_p_str})                    │")
-    print(f"│    • Cel·les (Min / Màx):     {cell_min:.3f} V / {cell_max:.3f} V (ΔV = {delta_v_str})              │")
-    print(f"│    • Temperatura BMS:         {bat_temp:.1f} ºC                                          │")
-    print("├──────────────────────────────────────────────────────────────────────────────┤")
-    print(f"│ ☀️ {BOLD}ENERGIA SOLAR & CONSUM DE LA CASETA{RESET}                                      │")
-    print(f"│    • Producció Solar Huawei:  {GREEN}{BOLD}{solar_p:6.1f} W{RESET}                                        │")
-    print(f"│    • Consum Casa (AC Loads):  {YELLOW}{BOLD}{ac_loads:6.1f} W{RESET}                                        │")
-    print(f"│    • Freqüència de CA Caseta: {ac_freq:.2f} Hz                                       │")
-    print("├──────────────────────────────────────────────────────────────────────────────┤")
-    print(f"│ 🔌 {BOLD}INVERSOR MULTIPLUS-II & XARXA EXTERIOR{RESET}                                   │")
-    print(f"│    • Mode MultiPlus:          {mode_color}{BOLD}{mode_str:<30}{RESET}       │")
-    print(f"│    • Tensió Xarxa L1:         {grid_v:.1f} V                                          │")
-    print(f"│    • Estat de la Xarxa:       {grid_status:<48} │")
+    # Renderitzat del Panell Visual Perfectament Alineat
+    print("┌" + "─" * (BOX_WIDTH + 2) + "┐")
+    print(box_line(f"🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}"))
+    print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc_str:<6}{RESET} [{bat_state}]"))
+    print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actual:.2f} kWh{RESET} actuals | {GREEN}{kwh_fins_tall:.2f} kWh útils (tall 10%){RESET}"))
+    print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_marge_sai:.2f} kWh lliures{RESET} (abans del sòl del 65%)"))
+    print(box_line(f"   • Tensió i Corrent:        {bat_v:.2f} V  |  {bat_i_str} ({bat_p_str})"))
+    print(box_line(f"   • Cel·les (Min / Màx):     {cell_min:.3f} V / {cell_max:.3f} V (ΔV = {delta_v_str})"))
+    print(box_line(f"   • Temperatura BMS:         {bat_temp:.1f} ºC"))
+    
+    print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+    print(box_line(f"☀️ {BOLD}ENERGIA SOLAR & CONSUM DE LA CASETA{RESET}"))
+    print(box_line(f"   • Producció Solar Huawei:  {GREEN}{BOLD}{solar_p:6.1f} W{RESET}"))
+    print(box_line(f"   • Consum Casa (AC Loads):  {YELLOW}{BOLD}{ac_loads:6.1f} W{RESET}"))
+    print(box_line(f"   • Freqüència de CA Caseta: {ac_freq:.2f} Hz"))
+
+    print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+    print(box_line(f"🔌 {BOLD}INVERSOR MULTIPLUS-II & XARXA EXTERIOR{RESET}"))
+    print(box_line(f"   • Mode MultiPlus:          {mode_color}{BOLD}{mode_str}{RESET}"))
+    print(box_line(f"   • Tensió Xarxa L1:         {grid_v:.1f} V"))
+    print(box_line(f"   • Estat de la Xarxa:       {grid_status}"))
 
     if daily_stats:
         sol_kwh = daily_stats.get("solar_kwh_today", 6.5)
@@ -193,12 +222,12 @@ def main():
         cov_pct = daily_stats.get("solar_coverage_percent", 57.0)
         cost_tot = daily_stats.get("cost_total_today", 0.71)
 
-        print("├──────────────────────────────────────────────────────────────────────────────┤")
-        print(f"│ 📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}                                       │")
-        print(f"│    • Producció Solar Generada: {GREEN}{BOLD}{sol_kwh:5.2f} kWh{RESET} (Pic màxim: {BOLD}{sol_pic:.0f} W{RESET})                │")
-        print(f"│    • Consum Total de la Casa:  {YELLOW}{BOLD}{con_kwh:5.2f} kWh{RESET} (Cobertura Solar: {CYAN}{BOLD}{cov_pct:.1f}%{RESET})              │")
-        print(f"│    • Importat de la Xarxa:     {BLUE}{BOLD}{imp_kwh:5.2f} kWh{RESET} | Exportat: {GREEN}{BOLD}{exp_kwh:4.2f} kWh (Zero Regal 🚫){RESET}  │")
-        print(f"│    • Cost Total Facturat d'Hui: {MAGENTA}{BOLD}{cost_tot:5.2f} €{RESET} (Tarifa 2.0TD - Tot inclòs)           │")
+        print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+        print(box_line(f"📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}"))
+        print(box_line(f"   • Producció Solar Generada: {GREEN}{BOLD}{sol_kwh:5.2f} kWh{RESET} (Pic màxim: {BOLD}{sol_pic:.0f} W{RESET})"))
+        print(box_line(f"   • Consum Total de la Casa:  {YELLOW}{BOLD}{con_kwh:5.2f} kWh{RESET} (Cobertura Solar: {CYAN}{BOLD}{cov_pct:.1f}%{RESET})"))
+        print(box_line(f"   • Importat de Xarxa:        {BLUE}{BOLD}{imp_kwh:5.2f} kWh{RESET} | Exportat: {GREEN}{BOLD}{exp_kwh:4.2f} kWh (Zero Regal){RESET}"))
+        print(box_line(f"   • Cost Total Facturat d'Hui: {MAGENTA}{BOLD}{cost_tot:5.2f} €{RESET} (Tarifa 2.0TD - Tot inclòs)"))
 
     if forecast:
         today_kwh = forecast.get("today_kwh", 0)
@@ -211,14 +240,14 @@ def main():
         risk_color = RED if risk >= 60 else (YELLOW if risk >= 30 else GREEN)
         risk_label = "🔴 Risc Alt (Alerta Calor)" if risk >= 60 else ("🟡 Risc Mitjà" if risk >= 30 else "🟢 Risc Baix (Normal)")
         
-        print("├──────────────────────────────────────────────────────────────────────────────┤")
-        print(f"│ 🌤️ {BOLD}PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API){RESET}                          │")
-        print(f"│    • Sol Esperat (Hui / Demà):{GREEN}{BOLD} {today_kwh:.1f} kWh{RESET} / {tomorrow_kwh:.1f} kWh                            │")
-        print(f"│    • Temp. Màx / Ocàs (21h):  {max_t:.1f} ºC / {sunset_t:.1f} ºC                                 │")
-        print(f"│    • Índex de Risc de Tall:   {risk_color}{BOLD}{risk_label:<26} ({risk}%){RESET}     │")
-        print(f"│    • Objectiu Reserva Nocturna: {BOLD}{target_soc}% de Bateria SAI{RESET}                           │")
+        print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+        print(box_line(f"🌤️ {BOLD}PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API){RESET}"))
+        print(box_line(f"   • Sol Esperat (Hui / Demà): {GREEN}{BOLD}{today_kwh:.1f} kWh{RESET} / {tomorrow_kwh:.1f} kWh"))
+        print(box_line(f"   • Temp. Màx / Ocàs (21h):   {max_t:.1f} ºC / {sunset_t:.1f} ºC"))
+        print(box_line(f"   • Índex de Risc de Tall:    {risk_color}{BOLD}{risk_label} ({risk}%){RESET}"))
+        print(box_line(f"   • Objectiu Reserva Nocturna:  {BOLD}{target_soc}% de Bateria SAI{RESET}"))
 
-    print("└──────────────────────────────────────────────────────────────────────────────┘")
+    print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     
     is_active = os.system("systemctl --user is-active --quiet caseta-guardian.service") == 0
     guardian_status = f"{GREEN}🟢 ACTIU I VIGILANT (systemd){RESET}" if is_active else f"{RED}🔴 ATURAT{RESET}"
