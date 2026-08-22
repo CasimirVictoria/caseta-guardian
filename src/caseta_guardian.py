@@ -8,8 +8,10 @@ JERARQUIA DE PRIORITATS:
 2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva tarda/vespre 85%, alerta calor 95-100%, avís tensió baixa <190V).
 3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
 4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i càrrega intel·ligent 100% anticipada en caps de setmana/festius).
+5. 📈 Històric Anual Permanent (Registre en CSV permanent per a auditoria i optimització anual).
 """
 
+import csv
 import datetime
 import json
 import logging
@@ -27,7 +29,6 @@ try:
 except ImportError:
     mqtt = None
 
-# Carregar configuració opcional des de config.json o variables d'entorn
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "config.json")
 config = {}
 if os.path.exists(CONFIG_FILE):
@@ -51,6 +52,9 @@ LONGITUDE = float(os.environ.get("LONGITUDE", config.get("longitude", -0.3)))
 
 FORECAST_CACHE_FILE = "/tmp/caseta_forecast_cache.json"
 DAILY_STATS_FILE = "/tmp/caseta_daily_stats.json"
+HISTORY_DIR = os.path.expanduser("~/.local/share/caseta-guardian")
+HISTORY_CSV_FILE = os.path.join(HISTORY_DIR, "historic_diari.csv")
+SECONDBRAIN_CSV_LINK = os.path.expanduser("~/Documents/Segon_Cervell/Notes/historic_caseta.csv")
 
 # Paràmetres de Bateria & Mode MultiPlus
 SOC_ISLANDING_THRESHOLD = 84.0      # SoC mínim per plantejar Mode 2 (Inverter Only)
@@ -63,9 +67,9 @@ RECONNECT_MAX_DISCHARGE_TIME_S = 5.0
 RECONNECT_MIN_SOC = 80.0            # Si SoC <= 80% en Mode 2 -> Reconnecta xarxa
 
 MIN_SWITCH_INTERVAL_S = 300.0       # Mínim 5 minuts entre commutacions de relé de xarxa
-KEEPALIVE_INTERVAL_S = 20.0         # Publicar keepalive cada 20s (Cerbo manté subscripció per 60s)
+KEEPALIVE_INTERVAL_S = 20.0         # Publicar keepalive cada 20s
 LOW_VOLTAGE_THRESHOLD_V = 190.0     # Llindar d'avís de caiguda de línia del carrer
-LOW_VOLTAGE_ALERT_TIME_S = 120.0    # Temps sostingut de tensió baixa (<190V per 2 minuts) abans d'alertar
+LOW_VOLTAGE_ALERT_TIME_S = 120.0    # Temps sostingut de tensió baixa (<190V per 2 minuts)
 
 # Escuts de Climatització
 AC_SHIELD_CUTOFF_SOC = 65.0         # Si SoC <= 65% -> Apaga l'aire automàticament
@@ -129,6 +133,11 @@ class CasetaGuardian:
         self.solar_peak_w = 0.0
         self.grid_cost_energy_today = 0.0
         self.cost_total_today = 0.0
+        self.mode2_time_seconds = 0.0
+        self.relay_switch_count = 0
+        self.max_delta_v_mv = 0.0
+        
+        self.ensure_history_storage()
         self.load_daily_stats()
         
         # Comptadors de Temps & Histèresi
@@ -143,34 +152,70 @@ class CasetaGuardian:
         self.ac_cutoff_sent = False
         self.last_openmeteo_fetch = 0.0
 
+    def ensure_history_storage(self):
+        """Assegura l'existència del directori i fitxer d'històric permanent."""
+        try:
+            os.makedirs(HISTORY_DIR, exist_ok=True)
+            if not os.path.exists(HISTORY_CSV_FILE):
+                with open(HISTORY_CSV_FILE, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "Data", "Solar_kWh", "Consum_kWh", "Importat_kWh", "Exportat_kWh",
+                        "Cobertura_Solar_Pct", "Cost_Total_EUR", "Temps_Mode2_Min",
+                        "Canvis_Rele", "Max_DeltaV_mV", "SoH_BMS_Pct", "Es_CapSetmana_o_Festiu"
+                    ])
+            
+            # Enllaç directe a Segon Cervell si no existeix
+            note_dir = os.path.dirname(SECONDBRAIN_CSV_LINK)
+            if os.path.exists(note_dir) and not os.path.exists(SECONDBRAIN_CSV_LINK):
+                try:
+                    os.symlink(HISTORY_CSV_FILE, SECONDBRAIN_CSV_LINK)
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f"Error inicialitzant històric: {e}")
+
+    def append_to_history(self, date_str: str, sol_kwh: float, con_kwh: float, imp_kwh: float, exp_kwh: float, cov_pct: float, cost: float, m2_sec: float, switches: int, max_dv: float, soh: float, is_hol: bool):
+        """Afegeix una fila completa del dia finalitzat a l'històric permanent."""
+        try:
+            m2_min = round(m2_sec / 60.0, 1)
+            # Evitar duplicats comprovant si la data ja existeix
+            existing_dates = set()
+            if os.path.exists(HISTORY_CSV_FILE):
+                with open(HISTORY_CSV_FILE, "r") as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if row:
+                            existing_dates.add(row[0])
+            
+            if date_str not in existing_dates:
+                with open(HISTORY_CSV_FILE, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        date_str, f"{sol_kwh:.2f}", f"{con_kwh:.2f}", f"{imp_kwh:.2f}", f"{exp_kwh:.2f}",
+                        f"{cov_pct:.1f}", f"{cost:.2f}", f"{m2_min:.1f}", switches, f"{max_dv:.0f}",
+                        f"{soh:.0f}", "SI" if is_hol else "NO"
+                    ])
+                log.info(f"📁 [HISTÒRIC PERMANENT] Dia {date_str} arxivat amb èxit ({sol_kwh:.2f} kWh solars, {con_kwh:.2f} kWh consum, {cost:.2f} €).")
+        except Exception as e:
+            log.warning(f"Error desant a l'històric CSV: {e}")
+
     def is_holiday_or_weekend(self, t=None):
         """Determina si una data és cap de setmana o festiu oficial (P3 Vall 24h a Espanya / C. Valenciana)."""
         if t is None:
             t = time.localtime()
-        # 1. Cap de setmana (Dissabte=5, Diumenge=6)
         if t.tm_wday >= 5:
             return True
         
         year, month, day = t.tm_year, t.tm_mon, t.tm_mday
-        # 2. Festius nacionals i autonòmics oficials
         fixed_holidays = {
-            (1, 1),   # Any Nou
-            (1, 6),   # Reis
-            (3, 19),  # Sant Josep (Comunitat Valenciana)
-            (5, 1),   # Festa del Treball
-            (6, 24),  # Sant Joan (Comunitat Valenciana)
-            (8, 15),  # Assumpció de la Mare de Déu
-            (10, 9),  # Dia de la Comunitat Valenciana
-            (10, 12), # Festa Nacional d'Espanya
-            (11, 1),  # Tots Sants
-            (12, 6),  # Dia de la Constitució
-            (12, 8),  # Immaculada Concepció
-            (12, 25), # Nadal
+            (1, 1), (1, 6), (3, 19), (5, 1), (6, 24),
+            (8, 15), (10, 9), (10, 12), (11, 1), (12, 6), (12, 8), (12, 25)
         }
         if (month, day) in fixed_holidays:
             return True
             
-        # 3. Festius mòbils de Pasqua (Divendres Sant i Dilluns de Pasqua)
+        # Festius mòbils de Pasqua (Gauss / Butcher)
         a = year % 19
         b = year // 100
         c = year % 100
@@ -225,14 +270,26 @@ class CasetaGuardian:
                     self.solar_peak_w = data.get("solar_peak_w", 0.0)
                     self.grid_cost_energy_today = data.get("grid_cost_energy_today", 0.0)
                     self.cost_total_today = data.get("cost_total_today", round(COST_FIX_DIARI * FACTOR_IMPOSTOS, 2))
+                    self.mode2_time_seconds = data.get("mode2_time_seconds", 0.0)
+                    self.relay_switch_count = data.get("relay_switch_count", 0)
+                    self.max_delta_v_mv = data.get("max_delta_v_mv", 0.0)
             except Exception:
                 pass
 
     def save_daily_stats(self):
-        """Desa les estadístiques diàries a disc."""
+        """Desa les estadístiques diàries i arxiva el dia anterior en canviar la data (00:00h)."""
         today = time.strftime("%Y-%m-%d")
         if today != self.current_day_str:
-            # Canvi de dia (00:00h): reinicialitza comptadors per al nou dia
+            # 📁 Canvi de dia (00:00h): Arxiva el dia complet a l'històric permanent CSV
+            solar_cov = round((self.solar_kwh_today / self.consumption_kwh_today * 100.0), 1) if self.consumption_kwh_today > 0 else 0.0
+            self.append_to_history(
+                self.current_day_str, self.solar_kwh_today, self.consumption_kwh_today,
+                self.grid_import_kwh_today, self.grid_export_kwh_today, solar_cov,
+                self.cost_total_today, self.mode2_time_seconds, self.relay_switch_count,
+                self.max_delta_v_mv, self.soh, self.is_holiday_or_weekend()
+            )
+            
+            # Reinicialització de comptadors per al nou dia
             self.current_day_str = today
             self.solar_start_kwh = self.pv_energy_forward
             self.solar_kwh_today = 0.0
@@ -242,6 +299,9 @@ class CasetaGuardian:
             self.solar_peak_w = 0.0
             self.grid_cost_energy_today = 0.0
             self.cost_total_today = round(COST_FIX_DIARI * FACTOR_IMPOSTOS, 2)
+            self.mode2_time_seconds = 0.0
+            self.relay_switch_count = 0
+            self.max_delta_v_mv = 0.0
 
         solar_cov = round((self.solar_kwh_today / self.consumption_kwh_today * 100.0), 1) if self.consumption_kwh_today > 0 else 0.0
         subtotal = COST_FIX_DIARI + self.grid_cost_energy_today
@@ -258,6 +318,9 @@ class CasetaGuardian:
             "solar_coverage_percent": min(100.0, solar_cov),
             "grid_cost_energy_today": round(self.grid_cost_energy_today, 4),
             "cost_total_today": round(self.cost_total_today, 2),
+            "mode2_time_seconds": round(self.mode2_time_seconds, 1),
+            "relay_switch_count": self.relay_switch_count,
+            "max_delta_v_mv": round(self.max_delta_v_mv, 0),
             "is_weekend_or_holiday": self.is_holiday_or_weekend()
         }
         try:
@@ -321,7 +384,6 @@ class CasetaGuardian:
             phase_name = "⚠️ Calor Moderada (85% Reserva Preventiva)"
 
         # 4. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
-        # Quan el sol comença a caure (>=18h o producció < consum/150W des de les 16h), pugem directament al 100%!
         elif is_weekend_or_hol and (current_hour >= 18 or (current_hour >= 16 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
             target = 100.0
             phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat - Vall 24h a 7 cts)"
@@ -449,6 +511,7 @@ class CasetaGuardian:
         log.info(f"🔄 CANVI DE MODE MULTIPLUS: Mode {self.vebus_mode} -> Mode {new_mode} ({reason})")
         self.last_mode_switch_time = now
         self.vebus_mode = new_mode
+        self.relay_switch_count += 1
         
         if self.client:
             topic = f"W/{self.portal_id}/vebus/276/Mode"
@@ -477,6 +540,16 @@ class CasetaGuardian:
 
         if self.pv_p > self.solar_peak_w:
             self.solar_peak_w = self.pv_p
+
+        # Integració del temps en Mode 2 (Aïllat)
+        if self.vebus_mode == 2:
+            self.mode2_time_seconds += dt_s
+
+        # Seguiment de Delta V màxim de cel·les
+        if self.cell_max_v and self.cell_min_v:
+            dv = (self.cell_max_v - self.cell_min_v) * 1000.0
+            if dv > self.max_delta_v_mv:
+                self.max_delta_v_mv = dv
 
         # Càlcul de Producció Solar des del comptador Carlo Gavazzi
         if self.pv_energy_forward is not None:
@@ -579,6 +652,10 @@ class CasetaGuardian:
             self.battery_p = float(val)
         elif topic.endswith("/battery/512/Dc/0/Temperature"):
             self.battery_temp = float(val)
+        elif topic.endswith("/battery/512/System/MaxCellVoltage"):
+            self.cell_max_v = float(val)
+        elif topic.endswith("/battery/512/System/MinCellVoltage"):
+            self.cell_min_v = float(val)
         elif topic.endswith("/system/0/Ac/Grid/L1/Power"):
             self.grid_p = float(val)
         elif topic.endswith("/vebus/276/Ac/ActiveIn/L1/V"):
@@ -614,6 +691,8 @@ class CasetaGuardian:
             f"N/+/battery/512/Dc/0/Current",
             f"N/+/battery/512/Dc/0/Power",
             f"N/+/battery/512/Dc/0/Temperature",
+            f"N/+/battery/512/System/MaxCellVoltage",
+            f"N/+/battery/512/System/MinCellVoltage",
             f"N/+/system/0/Ac/Grid/L1/Power",
             f"N/+/vebus/276/Ac/ActiveIn/L1/V",
             f"N/+/pvinverter/31/Ac/Power",

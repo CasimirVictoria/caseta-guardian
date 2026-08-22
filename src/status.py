@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Caseta Status CLI - Tauler de Control Ràpid en Terminal
-Mostra l'estat elèctric, bateria, solar, xarxa, balanç acumulat d'avui i previsió climàtica a l'instant.
+Mostra l'estat elèctric, bateria, solar, xarxa, balanç acumulat d'avui, previsió climàtica i històric permanent.
 """
 
+import csv
 import json
 import os
 import re
@@ -37,6 +38,7 @@ CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.p
 PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "48e7da8782fd"))
 FORECAST_CACHE_FILE = "/tmp/caseta_forecast_cache.json"
 DAILY_STATS_FILE = "/tmp/caseta_daily_stats.json"
+HISTORY_CSV_FILE = os.path.expanduser("~/.local/share/caseta-guardian/historic_diari.csv")
 
 # Constants Pylontech US3000C
 TOTAL_NOMINAL_KWH = 3.552  # 74 Ah * 48 V = 3.552 kWh
@@ -136,7 +138,55 @@ def get_daily_stats():
             pass
     return None
 
+def show_history():
+    """Mostra l'històric permanent diari."""
+    print(f"\n{BOLD}{CYAN}📈 HISTÒRIC PERMANENT D'ENERGIA - CASETA D'ADOR 📈{RESET}")
+    print(f"{DIM}Fitxer: {HISTORY_CSV_FILE}{RESET}\n")
+    
+    if not os.path.exists(HISTORY_CSV_FILE):
+        print(f"{YELLOW}Encara no hi ha dades històriques registrades.{RESET}\n")
+        return
+        
+    rows = []
+    with open(HISTORY_CSV_FILE, "r") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        for r in reader:
+            if r:
+                rows.append(r)
+                
+    if not rows:
+        print(f"{YELLOW}El registre històric és buit. S'anirà omplint cada nit a les 00:00h automàticament.{RESET}\n")
+        return
+
+    print(f"{BOLD}{'Data':<12} | {'Solar':<9} | {'Consum':<9} | {'Importat':<9} | {'Cob. Sol':<9} | {'Cost Total':<10} | {'Mode 2':<8} | {'ΔV Màx'}{RESET}")
+    print("─" * 86)
+    
+    tot_sol = 0.0
+    tot_con = 0.0
+    tot_imp = 0.0
+    tot_cost = 0.0
+    
+    for r in rows[-15:]:  # Mostra els últims 15 dies
+        d_str, sol, con, imp, exp, cov, cost, m2, sw, dv, soh, hol = r[:12]
+        tot_sol += float(sol)
+        tot_con += float(con)
+        tot_imp += float(imp)
+        tot_cost += float(cost)
+        print(f"{d_str:<12} | {GREEN}{sol:>6} kWh{RESET} | {YELLOW}{con:>6} kWh{RESET} | {BLUE}{imp:>6} kWh{RESET} | {CYAN}{cov:>6} %{RESET} | {MAGENTA}{cost:>7} €{RESET} | {m2:>5} min | {dv:>3} mV")
+        
+    print("─" * 86)
+    print(f"{BOLD}TOTALS ({len(rows)} dies registrats):{RESET}")
+    print(f" • ☀️ Solar Generat Acumulat:  {GREEN}{BOLD}{tot_sol:.2f} kWh{RESET}")
+    print(f" • 🔌 Consum Casa Acumulat:    {YELLOW}{BOLD}{tot_con:.2f} kWh{RESET}")
+    print(f" • 🏢 Importat de la Xarxa:    {BLUE}{BOLD}{tot_imp:.2f} kWh{RESET}")
+    print(f" • 💶 Cost Elèctric Facturat:  {MAGENTA}{BOLD}{tot_cost:.2f} €{RESET}\n")
+
 def main():
+    if "--history" in sys.argv or "-h" in sys.argv or "--historic" in sys.argv:
+        show_history()
+        return
+
     print(f"\n{BOLD}{CYAN}⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡{RESET}")
     print(f"{DIM}Connectant a Cerbo GX ({CERBO_IP})...{RESET}\n")
     
