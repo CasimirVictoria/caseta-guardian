@@ -34,7 +34,7 @@ for p in CONFIG_PATHS:
             pass
 
 CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.106"))
-PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "c0619ab2xxxx"))
+PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "48e7da8782fd"))
 FORECAST_CACHE_FILE = "/tmp/caseta_forecast_cache.json"
 DAILY_STATS_FILE = "/tmp/caseta_daily_stats.json"
 
@@ -150,6 +150,7 @@ def main():
 
     # Extracció de dades en temps real
     soc = data.get(f"N/{portal}/battery/512/Soc") or 0.0
+    soh = data.get(f"N/{portal}/battery/512/Soh") or 90.0
     bat_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage") or 0.0
     bat_i = data.get(f"N/{portal}/battery/512/Dc/0/Current") or 0.0
     bat_p = data.get(f"N/{portal}/battery/512/Dc/0/Power") or 0.0
@@ -176,7 +177,12 @@ def main():
     bat_i_str = f"{bat_i:+.1f} A"
     bat_state = f"{GREEN}Carregant{RESET}" if bat_i > 0.5 else (f"{YELLOW}Descarregant{RESET}" if bat_i < -0.5 else f"{BLUE}Repòs / Balancejant{RESET}")
     
-    delta_v_str = f"{(cell_max - cell_min)*1000:.0f} mV" if (cell_max and cell_min) else "N/A"
+    delta_v_val = (cell_max - cell_min)*1000 if (cell_max and cell_min) else None
+    if delta_v_val is not None:
+        delta_color = GREEN if delta_v_val <= 15 else (YELLOW if delta_v_val <= 35 else RED)
+        delta_v_str = f"{delta_color}{delta_v_val:.0f} mV{RESET}"
+    else:
+        delta_v_str = "N/A"
 
     mode_map = {1: "Charger Only", 2: "Inverter Only (Aïllat)", 3: "ON (Connectat a Xarxa)", 4: "OFF"}
     mode_str = mode_map.get(vebus_mode, f"Mode {vebus_mode}")
@@ -194,7 +200,7 @@ def main():
     # Renderitzat del Panell Visual Perfectament Alineat
     print("┌" + "─" * (BOX_WIDTH + 2) + "┐")
     print(box_line(f"🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}"))
-    print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc_str:<6}{RESET} [{bat_state}]"))
+    print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc_str:<6}{RESET} [{bat_state}]  (SoH BMS: {soh:.0f}%)"))
     print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actual:.2f} kWh{RESET} actuals | {GREEN}{kwh_fins_tall:.2f} kWh útils (tall 10%){RESET}"))
     print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_marge_sai:.2f} kWh lliures{RESET} (abans del sòl del 65%)"))
     print(box_line(f"   • Tensió i Corrent:        {bat_v:.2f} V  |  {bat_i_str} ({bat_p_str})"))
@@ -214,13 +220,13 @@ def main():
     print(box_line(f"   • Estat de la Xarxa:       {grid_status}"))
 
     if daily_stats:
-        sol_kwh = daily_stats.get("solar_kwh_today", 6.5)
-        sol_pic = daily_stats.get("solar_peak_w", 1078.6)
-        con_kwh = daily_stats.get("consumption_kwh_today", 11.4)
-        imp_kwh = daily_stats.get("grid_import_kwh_today", 4.9)
+        sol_kwh = daily_stats.get("solar_kwh_today", 5.8)
+        sol_pic = daily_stats.get("solar_peak_w", 374.0)
+        con_kwh = daily_stats.get("consumption_kwh_today", 5.1)
+        imp_kwh = daily_stats.get("grid_import_kwh_today", 3.2)
         exp_kwh = daily_stats.get("grid_export_kwh_today", 0.0)
-        cov_pct = daily_stats.get("solar_coverage_percent", 57.0)
-        cost_tot = daily_stats.get("cost_total_today", 0.71)
+        cov_pct = daily_stats.get("solar_coverage_percent", 100.0)
+        cost_tot = daily_stats.get("cost_total_today", 0.45)
 
         print("├" + "─" * (BOX_WIDTH + 2) + "┤")
         print(box_line(f"📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}"))

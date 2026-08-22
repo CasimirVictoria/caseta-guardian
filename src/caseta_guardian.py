@@ -5,7 +5,7 @@ Instal·lació Victron ESS (Cerbo GX, MultiPlus-II, Pylontech US3000C, Huawei PV
 
 JERARQUIA DE PRIORITATS:
 1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn/festiu, limitació corrent, escut 65%).
-2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva tarda/vespre 85%, alerta calor 95-100%).
+2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva tarda/vespre 85%, alerta calor 95-100%, avís tensió baixa <190V).
 3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
 4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i càrrega intel·ligent 100% anticipada en caps de setmana/festius).
 """
@@ -39,7 +39,7 @@ if os.path.exists(CONFIG_FILE):
 
 CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.100"))
 MQTT_PORT = int(os.environ.get("MQTT_PORT", config.get("mqtt_port", 1883)))
-PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "c0619ab2xxxx"))
+PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "48e7da8782fd"))
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", config.get("ntfy_topic", "victron_solar_alerts"))
 TUYA_S06_IP = os.environ.get("TUYA_S06_IP", config.get("tuya_s06_ip", "192.168.1.50"))
@@ -63,6 +63,9 @@ RECONNECT_MAX_DISCHARGE_TIME_S = 5.0
 RECONNECT_MIN_SOC = 80.0            # Si SoC <= 80% en Mode 2 -> Reconnecta xarxa
 
 MIN_SWITCH_INTERVAL_S = 300.0       # Mínim 5 minuts entre commutacions de relé de xarxa
+KEEPALIVE_INTERVAL_S = 20.0         # Publicar keepalive cada 20s (Cerbo manté subscripció per 60s)
+LOW_VOLTAGE_THRESHOLD_V = 190.0     # Llindar d'avís de caiguda de línia del carrer
+LOW_VOLTAGE_ALERT_TIME_S = 120.0    # Temps sostingut de tensió baixa (<190V per 2 minuts) abans d'alertar
 
 # Escuts de Climatització
 AC_SHIELD_CUTOFF_SOC = 65.0         # Si SoC <= 65% -> Apaga l'aire automàticament
@@ -90,6 +93,7 @@ class CasetaGuardian:
         
         # Estat en temps real
         self.soc = 95.0
+        self.soh = 90.0
         self.battery_v = 51.2
         self.battery_i = 0.0
         self.battery_p = 0.0
@@ -130,8 +134,11 @@ class CasetaGuardian:
         # Comptadors de Temps & Histèresi
         self.last_mode_switch_time = 0.0
         self.last_eval_time = time.time()
+        self.last_keepalive_time = 0.0
         self.export_start_time = None
         self.high_discharge_start_time = None
+        self.low_voltage_start_time = None
+        self.low_voltage_alert_sent = False
         self.warn_67_sent = False
         self.ac_cutoff_sent = False
         self.last_openmeteo_fetch = 0.0
@@ -314,7 +321,7 @@ class CasetaGuardian:
             phase_name = "⚠️ Calor Moderada (85% Reserva Preventiva)"
 
         # 4. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
-        # Quan el sol comença a caure (>=17h o producció < consum/150W), pugem directament al 100%!
+        # Quan el sol comença a caure (>=18h o producció < consum/150W des de les 16h), pugem directament al 100%!
         elif is_weekend_or_hol and (current_hour >= 18 or (current_hour >= 16 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
             target = 100.0
             phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat - Vall 24h a 7 cts)"
@@ -497,8 +504,19 @@ class CasetaGuardian:
             self.warn_67_sent = True
         elif self.soc > 72.0:
             self.warn_67_sent = False
+
+        # 3. Avís de Caiguda de Tensió de Xarxa (<190V sostinguts per >2 minuts)
+        if self.vebus_mode == 3 and self.grid_v < LOW_VOLTAGE_THRESHOLD_V:
+            if self.low_voltage_start_time is None:
+                self.low_voltage_start_time = now
+            elif (now - self.low_voltage_start_time) >= LOW_VOLTAGE_ALERT_TIME_S and not self.low_voltage_alert_sent:
+                self.send_ntfy("⚠️ Caiguda de Tensió de Xarxa", f"La línia del carrer està a {self.grid_v:.1f} V (<190 V) des de fa 2 minuts.\nEl MultiPlus manté la caseta 100% protegida a 230 V.", priority="default", tags="warning,zap")
+                self.low_voltage_alert_sent = True
+        elif self.grid_v >= (LOW_VOLTAGE_THRESHOLD_V + 10.0):
+            self.low_voltage_start_time = None
+            self.low_voltage_alert_sent = False
             
-        # 3. Protecció Química en Mode Aïllat
+        # 4. Protecció Química en Mode Aïllat
         if self.vebus_mode == 2:
             if self.battery_i < -RECONNECT_MAX_DISCHARGE_A:
                 if self.high_discharge_start_time is None:
@@ -512,7 +530,7 @@ class CasetaGuardian:
             if self.soc <= RECONNECT_MIN_SOC:
                 self.set_vebus_mode(3, f"Bateria ha arribat al sòl de reserva ({self.soc:.1f}% <= {RECONNECT_MIN_SOC}%)")
 
-        # 4. Zero Regal (Aïllament a Inverter Only)
+        # 5. Zero Regal (Aïllament a Inverter Only)
         if self.vebus_mode == 3:
             is_exporting = (self.grid_p <= GRID_EXPORT_THRESHOLD_W)
             is_battery_full_enough = (self.soc > SOC_ISLANDING_THRESHOLD)
@@ -551,6 +569,8 @@ class CasetaGuardian:
 
         if topic.endswith("/battery/512/Soc"):
             self.soc = float(val)
+        elif topic.endswith("/battery/512/Soh"):
+            self.soh = float(val)
         elif topic.endswith("/battery/512/Dc/0/Voltage"):
             self.battery_v = float(val)
         elif topic.endswith("/battery/512/Dc/0/Current"):
@@ -589,6 +609,7 @@ class CasetaGuardian:
             
         topics = [
             f"N/+/battery/512/Soc",
+            f"N/+/battery/512/Soh",
             f"N/+/battery/512/Dc/0/Voltage",
             f"N/+/battery/512/Dc/0/Current",
             f"N/+/battery/512/Dc/0/Power",
@@ -607,6 +628,7 @@ class CasetaGuardian:
             
         self.client.loop_start()
         self.client.publish(f"R/{self.portal_id}/keepalive", "")
+        self.last_keepalive_time = time.time()
         
         self.update_open_meteo_forecast()
         log.info("🛡️ Guardià en línia i vigilant telemetria en directe!")
@@ -614,7 +636,10 @@ class CasetaGuardian:
         try:
             while True:
                 time.sleep(2.0)
-                self.client.publish(f"R/{self.portal_id}/keepalive", "")
+                now = time.time()
+                if now - self.last_keepalive_time >= KEEPALIVE_INTERVAL_S:
+                    self.client.publish(f"R/{self.portal_id}/keepalive", "")
+                    self.last_keepalive_time = now
                 self.update_open_meteo_forecast()
                 self.evaluate_system()
         except KeyboardInterrupt:
