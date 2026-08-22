@@ -4,10 +4,10 @@ Caseta Guardian - Dimoni Natiu de Gestió Energètica i Protecció de Bateria
 Instal·lació Victron ESS (Cerbo GX, MultiPlus-II, Pylontech US3000C, Huawei PV).
 
 JERARQUIA DE PRIORITATS:
-1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn, limitació corrent, escut 65%).
+1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn/festiu, limitació corrent, escut 65%).
 2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva tarda/vespre 85%, alerta calor 95-100%).
 3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
-4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i pujada a 85% a partir de les 16h).
+4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i càrrega intel·ligent 100% anticipada en caps de setmana/festius).
 """
 
 import datetime
@@ -291,11 +291,12 @@ class CasetaGuardian:
             log.warning(f"Comanda Tuya (emissor IR): {e}")
 
     def sync_cerbo_min_soc(self):
-        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora, balanç energètic i clima."""
+        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora, balanç energètic, cap de setmana/festiu i clima."""
         if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
             return
         
         current_hour = int(time.strftime("%H"))
+        is_weekend_or_hol = self.is_holiday_or_weekend()
         
         # 1. 🌙 Nit Supervall (00:01h a 06:59h): Top-Balancing i 100% de SAI a 7 cts/kWh
         if 0 <= current_hour < 7:
@@ -311,8 +312,14 @@ class CasetaGuardian:
         elif self.blackout_risk >= 30:
             target = 85.0
             phase_name = "⚠️ Calor Moderada (85% Reserva Preventiva)"
+
+        # 4. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
+        # Quan el sol comença a caure (>=17h o producció < consum/150W), pugem directament al 100%!
+        elif is_weekend_or_hol and (current_hour >= 18 or (current_hour >= 16 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
+            target = 100.0
+            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat - Vall 24h a 7 cts)"
             
-        # 4. ☀️ Franja Diürna (07:00h a 19:59h):
+        # 5. ☀️ Franja Diürna Feiners (07:00h a 19:59h):
         elif 7 <= current_hour < 20:
             is_afternoon = (current_hour >= 16) or (self.remaining_kwh_today < 2.0)
             
@@ -326,10 +333,10 @@ class CasetaGuardian:
                 target = 85.0
                 phase_name = "☁️ Dia Variable / Tarda (85% Coixí Solar)"
                 
-        # 5. 🌆 Vespre (20:00h a 23:59h): Coixí de transició abans de la nit
+        # 6. 🌆 Vespre Feiner (20:00h a 23:59h): Coixí de transició abans de la nit
         else:
             target = 85.0
-            phase_name = "🌆 Vespre (85% Manteniment de SAI)"
+            phase_name = "🌆 Vespre Feiner (85% Coixí Evita Preus Pla/Punta)"
 
         self.target_reserve_soc = target
 
