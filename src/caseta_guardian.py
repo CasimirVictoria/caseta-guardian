@@ -10,6 +10,7 @@ JERARQUIA DE PRIORITATS:
 4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i pujada a 85% a partir de les 16h).
 """
 
+import datetime
 import json
 import logging
 import math
@@ -71,7 +72,7 @@ AC_WARN_SOC = 67.0                  # Si SoC <= 67% -> Envia avís push al mòbi
 COST_FIX_DIARI = 0.170              # Potència P1 (0.117€) + P3 (0.026€) + Comptador (0.027€)
 PREU_P1_PUNTA = 0.177691            # 10-14h i 18-22h L-V
 PREU_P2_PLA = 0.103870              # 08-10h, 14-18h, 22-24h L-V
-PREU_P3_VALL = 0.069473             # 00-08h L-V i 24h Cap de setmana
+PREU_P3_VALL = 0.069473             # 00-08h L-V, i 24h Caps de Setmana i Festius Nacionals/Autonòmics
 FACTOR_IMPOSTOS = 1.1418            # Impost Elèctric 3.8% + IVA 10%
 
 logging.basicConfig(
@@ -117,13 +118,13 @@ class CasetaGuardian:
         # Comptadors Diaris & Acumulats
         self.current_day_str = time.strftime("%Y-%m-%d")
         self.solar_start_kwh = None
-        self.solar_kwh_today = 6.5
-        self.consumption_kwh_today = 11.4
-        self.grid_import_kwh_today = 4.9
+        self.solar_kwh_today = 0.0
+        self.consumption_kwh_today = 0.0
+        self.grid_import_kwh_today = 0.0
         self.grid_export_kwh_today = 0.0
-        self.solar_peak_w = 1078.6
-        self.grid_cost_energy_today = 0.45
-        self.cost_total_today = 0.71
+        self.solar_peak_w = 0.0
+        self.grid_cost_energy_today = 0.0
+        self.cost_total_today = 0.0
         self.load_daily_stats()
         
         # Comptadors de Temps & Histèresi
@@ -135,11 +136,65 @@ class CasetaGuardian:
         self.ac_cutoff_sent = False
         self.last_openmeteo_fetch = 0.0
 
-    def get_current_kwh_rate(self):
-        """Retorna el preu contractat per kWh segons la franja horària actual."""
-        t = time.localtime()
+    def is_holiday_or_weekend(self, t=None):
+        """Determina si una data és cap de setmana o festiu oficial (P3 Vall 24h a Espanya / C. Valenciana)."""
+        if t is None:
+            t = time.localtime()
+        # 1. Cap de setmana (Dissabte=5, Diumenge=6)
         if t.tm_wday >= 5:
+            return True
+        
+        year, month, day = t.tm_year, t.tm_mon, t.tm_mday
+        # 2. Festius nacionals i autonòmics oficials
+        fixed_holidays = {
+            (1, 1),   # Any Nou
+            (1, 6),   # Reis
+            (3, 19),  # Sant Josep (Comunitat Valenciana)
+            (5, 1),   # Festa del Treball
+            (6, 24),  # Sant Joan (Comunitat Valenciana)
+            (8, 15),  # Assumpció de la Mare de Déu
+            (10, 9),  # Dia de la Comunitat Valenciana
+            (10, 12), # Festa Nacional d'Espanya
+            (11, 1),  # Tots Sants
+            (12, 6),  # Dia de la Constitució
+            (12, 8),  # Immaculada Concepció
+            (12, 25), # Nadal
+        }
+        if (month, day) in fixed_holidays:
+            return True
+            
+        # 3. Festius mòbils de Pasqua (Divendres Sant i Dilluns de Pasqua)
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d_div = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d_div - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        easter_m = (h + l - 7 * m + 114) // 31
+        easter_d = ((h + l - 7 * m + 114) % 31) + 1
+        
+        easter_date = datetime.date(year, easter_m, easter_d)
+        good_friday = easter_date - datetime.timedelta(days=2)
+        easter_monday = easter_date + datetime.timedelta(days=1)
+        
+        cur_date = datetime.date(year, month, day)
+        if cur_date in (good_friday, easter_monday):
+            return True
+            
+        return False
+
+    def get_current_kwh_rate(self):
+        """Retorna el preu contractat per kWh segons la franja horària, cap de setmana i festius."""
+        t = time.localtime()
+        if self.is_holiday_or_weekend(t):
             return PREU_P3_VALL
+        
         h = t.tm_hour
         if 0 <= h < 8:
             return PREU_P3_VALL
@@ -156,13 +211,13 @@ class CasetaGuardian:
                     data = json.load(f)
                 if data.get("date") == self.current_day_str:
                     self.solar_start_kwh = data.get("solar_start_kwh")
-                    self.solar_kwh_today = data.get("solar_kwh_today", 6.5)
-                    self.consumption_kwh_today = data.get("consumption_kwh_today", 11.4)
-                    self.grid_import_kwh_today = data.get("grid_import_kwh_today", 4.9)
+                    self.solar_kwh_today = data.get("solar_kwh_today", 0.0)
+                    self.consumption_kwh_today = data.get("consumption_kwh_today", 0.0)
+                    self.grid_import_kwh_today = data.get("grid_import_kwh_today", 0.0)
                     self.grid_export_kwh_today = data.get("grid_export_kwh_today", 0.0)
-                    self.solar_peak_w = data.get("solar_peak_w", 1078.6)
-                    self.grid_cost_energy_today = data.get("grid_cost_energy_today", 0.45)
-                    self.cost_total_today = data.get("cost_total_today", 0.71)
+                    self.solar_peak_w = data.get("solar_peak_w", 0.0)
+                    self.grid_cost_energy_today = data.get("grid_cost_energy_today", 0.0)
+                    self.cost_total_today = data.get("cost_total_today", round(COST_FIX_DIARI * FACTOR_IMPOSTOS, 2))
             except Exception:
                 pass
 
@@ -170,7 +225,7 @@ class CasetaGuardian:
         """Desa les estadístiques diàries a disc."""
         today = time.strftime("%Y-%m-%d")
         if today != self.current_day_str:
-            # Canvi de dia (00:00h): reinicialitza comptadors
+            # Canvi de dia (00:00h): reinicialitza comptadors per al nou dia
             self.current_day_str = today
             self.solar_start_kwh = self.pv_energy_forward
             self.solar_kwh_today = 0.0
@@ -195,7 +250,8 @@ class CasetaGuardian:
             "solar_peak_w": round(self.solar_peak_w, 1),
             "solar_coverage_percent": min(100.0, solar_cov),
             "grid_cost_energy_today": round(self.grid_cost_energy_today, 4),
-            "cost_total_today": round(self.cost_total_today, 2)
+            "cost_total_today": round(self.cost_total_today, 2),
+            "is_weekend_or_holiday": self.is_holiday_or_weekend()
         }
         try:
             with open(DAILY_STATS_FILE, "w") as f:
@@ -411,7 +467,7 @@ class CasetaGuardian:
         # Càlcul de Producció Solar des del comptador Carlo Gavazzi
         if self.pv_energy_forward is not None:
             if self.solar_start_kwh is None:
-                self.solar_start_kwh = max(0.0, self.pv_energy_forward - 6.5)
+                self.solar_start_kwh = self.pv_energy_forward
             self.solar_kwh_today = max(0.0, self.pv_energy_forward - self.solar_start_kwh)
         else:
             if self.pv_p > 0:
