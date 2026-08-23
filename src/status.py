@@ -305,8 +305,17 @@ def main():
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     
-    is_active = os.system("systemctl --user is-active --quiet caseta-guardian.service") == 0
-    guardian_status = f"{GREEN}🟢 ACTIU I VIGILANT (systemd){RESET}" if is_active else f"{RED}🔴 ATURAT{RESET}"
+    is_local_active = os.system("systemctl --user is-active --quiet caseta-guardian.service 2>/dev/null") == 0
+    is_cerbo_active = False
+    if not is_local_active:
+        is_cerbo_active = os.system(f"ssh -o BatchMode=yes -o ConnectTimeout=1 root@{CERBO_IP} 'svstat /service/caseta-guardian 2>/dev/null | grep -q \"up (pid\"' 2>/dev/null") == 0
+
+    if is_cerbo_active:
+        guardian_status = f"{GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}"
+    elif is_local_active:
+        guardian_status = f"{GREEN}🟢 ACTIU I VIGILANT (systemd local){RESET}"
+    else:
+        guardian_status = f"{RED}🔴 ATURAT{RESET}"
     print(f"  Guardià Natiu (caseta-guardian): {guardian_status}")
     print()
 

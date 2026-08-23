@@ -6,35 +6,42 @@ Lightweight native Python 3 systemd daemon and real-time CLI telemetry dashboard
 
 ---
 
-## 🏗️ Architecture: Migration from Node-RED on Cerbo GX to an Always-On Linux Host
+## 🏗️ Architecture & Production Deployment
 
-This project was born from an architectural evolution: **migrating away from embedded Node-RED on the Cerbo GX to a standalone, lightweight Python daemon running on an always-on local Linux host / laptop**.
+The project is designed with maximum modularity and is currently running **in production directly on the Cerbo GX (Venus OS)** or optionally on an external Linux host connected via local LAN:
 
 ```
-  ┌────────────────────────────────────────┐       MQTT (LAN / <1 ms)       ┌────────────────────────────────────────┐
-  │         💻 ALWAYS-ON LINUX HOST        │ ─────────────────────────────> │            🎛️ CERBO GX (GX OS)         │
-  │ • caseta_guardian.py (systemd daemon)  │ <───────────────────────────── │ • FlashMQ Broker (C++)                 │
-  │ • Open-Meteo 7-day predictive API      │                                │ • CANbus BMS (Pylontech battery)       │
-  │ • Ntfy push alerts & Tuya IR HVAC      │                                │ • RS485 Modbus Solar Meter (Huawei)    │
-  │ • 15 MB RAM | <0.1% CPU                │                                │ • Pristine Factory Firmware (46.8 ºC)  │
-  └────────────────────────────────────────┘                                └────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                    🎛️ CERBO GX (VENUS OS IN PRODUCTION)                  │
+  │                                                                          │
+  │  • caseta_guardian.py (Native daemontools service at /data/caseta-guard) │
+  │  • Internal MQTT connection to 127.0.0.1 (FlashMQ / <0.1 ms latency)     │
+  │  • Predictive solar forecast engine (Open-Meteo API)                     │
+  │  • Ntfy push notifications & Tuya Cloud OpenAPI for AC climate control   │
+  │  • Guaranteed persistence in /data/ (survives Victron firmware updates)  │
+  │  • Tiny footprint: ~39 MB RAM | 0.0% CPU | Cool CPU temperature          │
+  └──────────────────────────────────────────────────────────────────────────┘
+                                      ▲
+                                      │ MQTT / LAN / SSH
+                                      ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                 💻 LINUX HOST / CLI CLIENT (caseta)                      │
+  │  • Real-time CLI telemetry dashboard and instant diagnostics             │
+  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 🌟 Why this Distributed Architecture is Dramatically Superior:
+### 🌟 Key Advantages of Native Cerbo GX Deployment:
 
-1. 🪶 **Pristine, Factory-Grade Cerbo GX:**
-   - The Cerbo GX is relieved of heavy Node.js runtimes, fragile npm modules, and web server rendering.
-   - It performs exclusively what embedded hardware does best: **ultra-fast CANbus battery BMS monitoring, RS485 energy metering, and inverter safety**.
-   - **100% Update-Proof:** You can update Venus OS to any future version without ever risking losing custom flows or broken dependencies.
+1. 🟢 **Total 24/7/365 Autonomy:**
+   - Operation does not depend on any personal computer being powered on. The Cerbo GX is powered directly from the 24V/48V battery bank and runs continuously.
+   - **Zero Latency (127.0.0.1):** Direct internal communication with FlashMQ and D-Bus.
 
-2. ❄️ **Massive Thermal & Memory Relief:**
-   - **RAM Freed on Cerbo GX:** Dropped from ~450 MB under Node-RED down to only **`270 MB`** (leaving **>720 MB of free RAM**!).
-   - **CPU Temperature Drop:** Cerbo GX CPU temperature plunged from 55 ºC – 58 ºC down to **`46.8 ºC`** *(8 to 11 ºC cooler in the peak of Mediterranean August!)*.
-   - **Host Overhead:** The Python daemon on the laptop consumes a negligible **`15 MB` of RAM** and **`<0.1%` CPU**.
+2. 🛡️ **Update-Proof Persistence on Venus OS:**
+   - The service resides in the persistent `/data/caseta-guardian/` partition linked to `/service/caseta-guardian` and supervised by `daemontools` (automatic restarts on any failure).
+   - Embedded in `/data/rc.local` to survive all official Victron firmware upgrades.
 
-3. 🛠️ **Maintainability & Unix Simplicity:**
-   - Pure Python 3 standard code: readable, typed, and maintainable.
-   - Logs are monitored seamlessly via `journalctl --user -u caseta-guardian -f`.
+3. 🪶 **Negligible Footprint:**
+   - Consumes only **~39 MB of RAM** (<4% of total RAM) and **0.0% CPU**, leaving over 700 MB of free RAM.
 
 ---
 

@@ -13,6 +13,8 @@ JERARQUIA DE PRIORITATS:
 
 import csv
 import datetime
+import hashlib
+import hmac
 import json
 import logging
 import math
@@ -350,15 +352,60 @@ class CasetaGuardian:
             log.warning(f"Error enviant notificació ntfy: {e}")
 
     def send_tuya_ir_power_off(self):
-        """Envia ordre infraroja per apagar l'aire condicionat."""
+        """Envia ordre infraroja per apagar l'aire condicionat via Tuya Cloud Open API."""
         log.info("❄️ [ESCUT CRÍTIC] Apagant aire condicionat per protegir la reserva de bateria...")
         try:
-            import tinytuya
-            d = tinytuya.Device(TUYA_DEV_ID, TUYA_S06_IP, TUYA_LOCAL_KEY, version=3.3)
-            d.set_status("0", 201)
-            log.info("Comanda IR Tuya 'power_off' transmesa amb èxit!")
+            client_id = config.get("tuya_client_id", "YOUR_TUYA_CLIENT_ID")
+            secret = config.get("tuya_secret", "YOUR_TUYA_SECRET")
+            infrared_id = config.get("tuya_infrared_id", "YOUR_INFRARED_GATEWAY_ID")
+            remote_id = config.get("tuya_remote_id", "YOUR_AC_REMOTE_ID")
+            base_url = "https://openapi.tuyaeu.com"
+
+            # 1. Obtenir token
+            t = str(int(time.time() * 1000))
+            urlPath = "/v1.0/token?grant_type=1"
+            contentHash = hashlib.sha256(b"").hexdigest()
+            stringToSign = f"GET\n{contentHash}\n\n{urlPath}"
+            signStr = f"{client_id}{t}{stringToSign}"
+            sign = hmac.new(secret.encode(), signStr.encode(), hashlib.sha256).hexdigest().upper()
+
+            headers = {
+                "client_id": client_id,
+                "sign": sign,
+                "t": t,
+                "sign_method": "HMAC-SHA256",
+                "Content-Type": "application/json"
+            }
+            req = urllib.request.Request(f"{base_url}{urlPath}", headers=headers)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                res = json.loads(resp.read().decode())
+                token = res["result"]["access_token"]
+
+            # 2. Enviar ordre Power Off (0)
+            t_now = str(int(time.time() * 1000))
+            path = f"/v2.0/infrareds/{infrared_id}/air-conditioners/{remote_id}/command"
+            body = json.dumps({"code": "power", "value": 0})
+            cHash = hashlib.sha256(body.encode()).hexdigest()
+            sToSign = f"POST\n{cHash}\n\n{path}"
+            sStr = f"{client_id}{token}{t_now}{sToSign}"
+            s = hmac.new(secret.encode(), sStr.encode(), hashlib.sha256).hexdigest().upper()
+            h = {
+                "client_id": client_id,
+                "access_token": token,
+                "sign": s,
+                "t": t_now,
+                "sign_method": "HMAC-SHA256",
+                "Content-Type": "application/json"
+            }
+            r = urllib.request.Request(f"{base_url}{path}", data=body.encode(), headers=h, method="POST")
+            with urllib.request.urlopen(r, timeout=5) as rep:
+                result_data = json.loads(rep.read().decode())
+                if result_data.get("success"):
+                    log.info("❄️ Comanda Tuya Cloud 'power=0' (Apagat AC) transmesa amb èxit!")
+                else:
+                    log.warning(f"Resposta Tuya Cloud: {result_data}")
         except Exception as e:
-            log.warning(f"Comanda Tuya (emissor IR): {e}")
+            log.warning(f"Error enviant comanda Tuya Cloud: {e}")
 
     def sync_cerbo_min_soc(self):
         """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora, balanç energètic, cap de setmana/festiu i clima."""

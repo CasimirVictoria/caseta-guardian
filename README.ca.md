@@ -6,35 +6,42 @@ Dimoni natiu en Python 3 i tauler de telemetria en consola CLI per a la gestió 
 
 ---
 
-## 🏗️ Arquitectura: Migració de Node-RED al Cerbo GX cap a un Portàtil Sempre Encès
+## 🏗️ Arquitectura i Estat en Producció
 
-Aquest projecte neix d'una evolució arquitectònica clau: **migrar la lògica pesada de Node-RED que corria al maquinari integrat del Cerbo GX cap a un script natiu i lleuger en Python 3 que s'executa en un portàtil / servidor Linux sempre encès a la Caseta**.
+El projecte està dissenyat amb màxima modularitat i actualment s'executa **en producció directament dins del mateix Cerbo GX (Venus OS)** o de manera opcional en un servidor/portàtil Linux connectat per xarxa local:
 
 ```
-  ┌────────────────────────────────────────┐       MQTT (LAN / <1 ms)       ┌────────────────────────────────────────┐
-  │     💻 PORTÀTIL LINUX (SEMPRE ENCÈS)   │ ─────────────────────────────> │            🎛️ CERBO GX (VENUS OS)      │
-  │ • caseta_guardian.py (dimoni systemd)  │ <───────────────────────────── │ • Broker FlashMQ (C++)                 │
-  │ • Model meteorològic Open-Meteo        │                                │ • Comunicació CANbus BMS (Bateria)     │
-  │ • Avisos Ntfy i IR Tuya per a l'aire   │                                │ • Comptador Solar Modbus (Huawei)      │
-  │ • 15 MB RAM | <0.1% CPU                │                                │ • Firmware Pur de Fàbrica (46.8 ºC)    │
-  └────────────────────────────────────────┘                                └────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                    🎛️ CERBO GX (VENUS OS EN PRODUCCIÓ)                   │
+  │                                                                          │
+  │  • caseta_guardian.py (Servei daemontools natiu a /data/caseta-guardian) │
+  │  • Connexió MQTT interna a 127.0.0.1 (FlashMQ / <0.1 ms de latència)    │
+  │  • Model meteorològic solar Open-Meteo API                               │
+  │  • Avisos push mòbil Ntfy i control Tuya Cloud per a l'aire condicionat │
+  │  • Persistència garantida a /data/ (sobreviu a actualitzacions firmware) │
+  │  • Consum irrisori: ~39 MB RAM | 0.0% CPU | Temperatura CPU freda        │
+  └──────────────────────────────────────────────────────────────────────────┘
+                                      ▲
+                                      │ MQTT / LAN / SSH
+                                      ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                 💻 PORTÀTIL / CLIENT CLI (caseta)                        │
+  │  • Tauler de telemetria en directe i diagnosi instantània en consola     │
+  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 🌟 Per què aquesta Arquitectura Distribuïda és Molt Superior:
+### 🌟 Avantatges del Desplegament Natiu al Cerbo GX:
 
-1. 🪶 **Cerbo GX Pur i Intocable de Fàbrica:**
-   - S'allibera el Cerbo de l'entorn pesat de Node.js, paletes npm fràgils i càrrega de servidors web.
-   - Es dedica exclusivament a la seua feina de maquinari: **mesura d'alta precisió, gestió de busos industrials (CANbus / RS485) i seguretat de l'inversor**.
-   - **Immunitat total a actualitzacions:** Pots actualitzar Venus OS a qualsevol nova versió oficial sense por a trencar cap flux ni perdre configuracions.
+1. 🟢 **Autonomia Total 24/7/365:**
+   - La instal·lació no depèn de cap ordinador personal encès. El Cerbo GX s'alimenta directe de la bateria i manté la vigilància permanent ininterrompuda.
+   - **Latència Zero (127.0.0.1):** Comunicació directa amb el broker FlashMQ i D-Bus interns.
 
-2. ❄️ **Alliberament Brutal de Memòria i Temperatura:**
-   - **Memòria RAM Lliure al Cerbo:** El consum cau de ~450 MB amb Node-RED a només **`270 MB`** (deixant **més de 720 MB de RAM lliures**!).
-   - **Temperatura de la CPU:** La CPU del Cerbo GX ha baixat de 55 ºC – 58 ºC a només **`46.8 ºC`** *(entre 8 i 11 ºC més fresc a ple agost a la Safor!)*.
-   - **Consum al Portàtil:** El dimoni de Python al portàtil consumeix només **`15 MB` de RAM** i **`< 0.1%` de CPU**.
+2. 🛡️ **Persistència i Robustesa a Venus OS:**
+   - El servei resideix a la partició persistent `/data/caseta-guardian/` amb enllaç a `/service/caseta-guardian` supervisat per `daemontools` (rearrancada automàtica en cas de fallada).
+   - Inserit a `/data/rc.local` per a sobreviure a qualsevol reinici o actualització de firmware oficial de Victron.
 
-3. 🛠️ **Simplicitat Unix i Màxima Sobirania:**
-   - Codi en Python 3 estàndard, net, transparent i directament editable.
-   - Registres i logs immediats amb `journalctl --user -u caseta-guardian -f`.
+3. 🪶 **Consum Mínim i Zero Sobrecàrrega:**
+   - Ocupa només **~39 MB de RAM** (menys del 4% de la memòria del Cerbo) i **0% de CPU**, deixant més de 700 MB de RAM lliures.
 
 ---
 
