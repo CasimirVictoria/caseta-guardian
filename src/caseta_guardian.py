@@ -5,7 +5,7 @@ Caseta d'Ador (La Safor, València)
 
 Funcions principals:
 1. ☀️ Zero Regal 100% Reversible (Smart Islanding): Obre el relé AC1 en excés solar i reconnecta en sobrecàrrega.
-2. 🕒 Control Circadiari de Minimum SOC: 70% de dia (absorció solar), 85% de tarda (escut SAI) i 100% de nit (balanceig a 7 cts/kWh).
+2. 🧠 Sòl Dinàmic Adaptatiu (Avaluat periòdicament): Ajusta el Minimum SOC segons el balanç real de Sol vs Consum i Open-Meteo.
 3. 🏖️ Cap de Setmana / Festiu Avançat: 100% Top-Balancing a la tarda en hores vall contínues (24h a 7 cts/kWh).
 4. 🌤️ Integració Predictiva Open-Meteo: Anticipa onades de calor i ajusta la reserva SAI preventivament.
 5. ❄️ Domòtica d'Emergència Tuya: Apaga l'aire condicionat per IR si la bateria baixa del 65% en aïllat.
@@ -135,6 +135,7 @@ class CasetaGuardian:
         self.last_stats_calc_time = 0.0
         self.last_keepalive_time = 0.0
         self.last_applied_min_soc = None
+        self.last_soc_eval_time = 0.0
         
         # Previsió Open-Meteo
         self.today_kwh_est = 5.0
@@ -218,23 +219,13 @@ class CasetaGuardian:
     def is_holiday_or_weekend(self) -> bool:
         """Determina si avui és cap de setmana o festiu oficial (P3 Vall 24h)."""
         now = get_madrid_now()
-        if now.weekday() in (5, 6): # Dissabte o Diumenge
+        if now.weekday() in (5, 6):
             return True
             
         y, m, d = now.year, now.month, now.day
         fixed_holidays = [
-            (1, 1),   # Any Nou
-            (1, 6),   # Reis Mags
-            (3, 19),  # Sant Josep (CV)
-            (5, 1),   # Festa del Treball
-            (6, 24),  # Sant Joan (CV)
-            (8, 15),  # Assumpció de la Verge
-            (10, 9),  # Dia de la Comunitat Valenciana
-            (10, 12), # Festa Nacional d'Espanya
-            (11, 1),  # Tots Sants
-            (12, 6),  # Dia de la Constitució
-            (12, 8),  # Immaculada Concepció
-            (12, 25), # Nadal
+            (1, 1), (1, 6), (3, 19), (5, 1), (6, 24), (8, 15),
+            (10, 9), (10, 12), (11, 1), (12, 6), (12, 8), (12, 25),
         ]
         if (m, d) in fixed_holidays:
             return True
@@ -252,7 +243,7 @@ class CasetaGuardian:
     def update_energy_forecast(self):
         """Consulta Open-Meteo per estimar radiació solar i temperatura màxima a Ador."""
         now = time.time()
-        if now - self.last_forecast_time < 1800: # cada 30 min
+        if now - self.last_forecast_time < 1800:
             return
             
         self.last_forecast_time = now
@@ -266,12 +257,10 @@ class CasetaGuardian:
             rad_list = daily.get("shortwave_radiation_sum", [22.0, 22.0])
             temp_max_list = daily.get("temperature_2m_max", [30.0, 30.0])
             
-            # 1.35 kWp Huawei * radiació MJ/m2 * factor de conversió
             self.today_kwh_est = max(1.0, (rad_list[0] / 3.6) * 1.35 * 0.78)
             self.tomorrow_kwh_est = max(1.0, (rad_list[1] / 3.6) * 1.35 * 0.78)
             self.max_temp_today = temp_max_list[0]
             
-            # Radiació restant avui
             hourly = data.get("hourly", {})
             dni = hourly.get("direct_normal_irradiance", [])
             temps = hourly.get("temperature_2m", [])
@@ -289,7 +278,6 @@ class CasetaGuardian:
             else:
                 self.sunset_temp_today = self.max_temp_today - 4.0
                 
-            # Risc d'apagada per sobrecàrrega rural d'estiu
             if self.max_temp_today >= 38.0:
                 self.blackout_risk = 70
             elif self.max_temp_today >= 34.0:
@@ -301,7 +289,6 @@ class CasetaGuardian:
 
             log.info(f"📊 Open-Meteo: Sol total = {self.today_kwh_est:.1f} kWh (Queden {self.remaining_kwh_today:.1f} kWh) | Màx = {self.max_temp_today:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc:.0f}%")
             
-            # Desa cache per a l'script 'caseta'
             cache = {
                 "today_kwh": round(self.today_kwh_est, 1),
                 "remaining_kwh": round(self.remaining_kwh_today, 1),
@@ -319,14 +306,12 @@ class CasetaGuardian:
             log.warning(f"Error actualitzant Open-Meteo: {e}")
 
     def trigger_tuya_ac_off(self):
-        """Envia l'ordre d'apagar l'aire condicionat per infrarojos Tuya en emergència."""
         if self.tuya_ac_turned_off_today:
             return
             
         log.info("❄️ [ESCUT CLIMÀTIC] Apagant Aire Condicionat per infrarojos Tuya...")
         self.tuya_ac_turned_off_today = True
         
-        # 1. Intent Local directe (tinytuya)
         try:
             import tinytuya
             dev_id = config.get("tuya_s06_id", "bf5377f0d014d59a72kexi")
@@ -339,7 +324,6 @@ class CasetaGuardian:
         except Exception as e:
             log.warning(f"Comanda Tuya Local no disponible ({e}). Provant Tuya Cloud...")
 
-        # 2. Intent Tuya Cloud API
         try:
             cid = config.get("tuya_cloud_client_id", "v9mkg98345ektd4p4m7u")
             sec = config.get("tuya_cloud_secret", "d1326442650c45169a9b8979ceb649ee")
@@ -365,10 +349,16 @@ class CasetaGuardian:
             log.warning(f"Error enviant comanda Tuya Cloud: {e}")
 
     def sync_cerbo_min_soc(self):
-        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora de Madrid, balanç energètic, cap de setmana/festiu i clima."""
+        """Avalua periòdicament el balanç de Sol vs Consum, estat de cel·les i clima per modular el Minimum SOC."""
         if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
             return
         
+        now = time.time()
+        # Avaluem cada 30 segons per respondre àgilment als canvis de núvols o encesa d'aparells
+        if now - self.last_soc_eval_time < 30 and self.last_applied_min_soc is not None:
+            return
+        self.last_soc_eval_time = now
+
         now_madrid = get_madrid_now()
         current_hour = now_madrid.hour
         is_weekend_or_hol = self.is_holiday_or_weekend()
@@ -376,20 +366,29 @@ class CasetaGuardian:
         # 1. 🌙 Nit Supervall (00:00h a 06:59h Madrid): Top-Balancing i 100% de SAI a 7 cts/kWh
         if 0 <= current_hour < 7:
             target = 100.0
-            phase_name = "🌙 Nit Supervall (100% Top-Balancing & SAI Màxim)"
+            phase_name = "🌙 Nit Supervall (100% Top-Balancing & SAI Màxim a 7 cts)"
             
-        # 2. ☀️ Franja Diürna Solar (07:00h a 15:59h Madrid - Feiners i Caps de Setmana):
-        # Baixem el sòl al 70% per deixar un 30% buit a la bateria per engolir el sol
+        # 2. ☀️ Franja Diürna (07:00h a 15:59h Madrid) - Avaluació Dinàmica Sol vs Consum:
         elif 7 <= current_hour < 16:
             if self.blackout_risk >= 60:
                 target = 95.0
                 phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
-            elif self.today_kwh_est >= 4.5:
+            # A) Sol Radiant Actiu (Huawei > 300W o Sol supera el Consum): Baixem a 70% per engolir l'excedent
+            elif self.pv_p >= 350.0 or (self.pv_p >= 200.0 and self.pv_p >= self.ac_loads):
                 target = 70.0
-                phase_name = "☀️ Dia Radiant (70% per absorbir excedent solar)"
-            else:
+                phase_name = f"☀️ Sol Actiu Radiant ({self.pv_p:.0f}W > {self.ac_loads:.0f}W consum -> 70% per absorbir)"
+            # B) Dia Molt Núvol / Fosc / Pluja (Huawei < 200W): Mantenim 85% per no drenar la bateria
+            elif self.pv_p < 200.0 and self.today_kwh_est < 3.5:
                 target = 85.0
-                phase_name = "☁️ Dia Variable / Baix Sol (85% Coixí Preventiu)"
+                phase_name = f"☁️ Dia Molt Núvol ({self.pv_p:.0f}W -> 85% Escut SAI Protegit)"
+            # C) Matí Despertant / Variable: Sòl moderat de seguretat
+            else:
+                if self.pv_p > 250.0:
+                    target = 70.0
+                    phase_name = f"⛅ Sol Creixent ({self.pv_p:.0f}W -> 70% Espai Obert)"
+                else:
+                    target = 85.0
+                    phase_name = f"🌥️ Baixa Producció ({self.pv_p:.0f}W -> 85% Coixí SAI)"
 
         # 3. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
         elif is_weekend_or_hol and (current_hour >= 18 or (current_hour >= 16 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
@@ -416,7 +415,7 @@ class CasetaGuardian:
 
     def set_multiplus_mode(self, target_mode: int, reason: str):
         now = time.time()
-        if now - self.last_mode_switch_time < 20: # protecció histeresi
+        if now - self.last_mode_switch_time < 20:
             return
             
         mode_names = {1: "Charger Only", 2: "Inverter Only (Aïllat)", 3: "ON (Connectat a Xarxa)", 4: "OFF"}
@@ -449,7 +448,6 @@ class CasetaGuardian:
         dt = now - self.last_stats_calc_time
         self.last_stats_calc_time = now
         
-        # Reset diari a mitjanit (hora de Madrid)
         today_str = get_madrid_now().strftime("%Y-%m-%d")
         if today_str != self.current_day_str:
             self.append_to_history(self.current_day_str)
@@ -485,7 +483,6 @@ class CasetaGuardian:
                 imp_kwh = (self.grid_p / 1000.0) * hours
                 self.grid_import_kwh_today += imp_kwh
                 
-                # Discriminació horària 2.0TD (hora de Madrid)
                 now_madrid = get_madrid_now()
                 ch = now_madrid.hour
                 if self.is_holiday_or_weekend():
@@ -529,26 +526,21 @@ class CasetaGuardian:
             pass
 
     def evaluate_state_machine(self):
-        """Màquina d'estats del Guardià: Zero Regal, Escut de Sobrecàrrega, Watchdog <190V i Escut Tuya."""
         now = time.time()
 
-        # 1. 🛡️ ESCUT DE PROTECCIÓ SAI DOMÒTIC (<65% SoC)
         if self.soc < 65.0 and not self.tuya_ac_turned_off_today:
             self.trigger_tuya_ac_off()
 
-        # 2. 🚨 WATCHDOG DE BAIXA TENSIÓ RURAL (<190V durant >2 minuts)
         if self.vebus_mode != 2 and self.grid_v < 190.0:
             if self.low_voltage_start_time is None:
                 self.low_voltage_start_time = now
             elif now - self.low_voltage_start_time >= 120.0:
                 self.send_notification("🚨 Tensió Xarxa Crítica", f"Tensió rural a {self.grid_v:.1f}V (<190V durant >2 minuts). Vigilant estabilitat!", "high", "warning")
-                self.low_voltage_start_time = now # reinicia
+                self.low_voltage_start_time = now
         else:
             self.low_voltage_start_time = None
 
-        # 3. ⚡ RECONNEXIÓ D'EMERGÈNCIA A XARXA (Mode 2 -> Mode 3)
         if self.vebus_mode == 2:
-            # Condició A: Descàrrega forta de bateria (>15A durant >5s)
             if self.bat_i < -15.0:
                 if self.high_discharge_start_time is None:
                     self.high_discharge_start_time = now
@@ -559,19 +551,15 @@ class CasetaGuardian:
             else:
                 self.high_discharge_start_time = None
 
-            # Condició B: Bateria caient per sota de la reserva segura (<70% SoC)
             if self.soc < 70.0:
                 self.set_multiplus_mode(3, f"Bateria ha baixat del sòl segur ({self.soc:.1f}% < 70.0%)")
                 return
 
-            # Condició C: Producció solar esgotada i consum actiu
             if self.pv_p < 50.0 and self.ac_loads > 300.0 and self.soc <= 85.0:
                 self.set_multiplus_mode(3, f"Sol esgotat ({self.pv_p:.0f}W) i consum a casa ({self.ac_loads:.0f}W)")
                 return
 
-        # 4. 🏝️ DESCONNEXIÓ PER EVITAR ABOCAMENT (Mode 3 -> Mode 2)
         elif self.vebus_mode == 3:
-            # Condició: Abocant >50W amb bateria alta (>=88% SoC) durant >30s
             if self.grid_p is not None and self.grid_p < -50.0 and self.soc >= 88.0:
                 if self.export_start_time is None:
                     self.export_start_time = now
@@ -592,7 +580,6 @@ class CasetaGuardian:
             val = json.loads(msg.payload.decode()).get("value")
             topic = msg.topic
             
-            # Telemetria de Bateria
             if topic.endswith("/battery/512/Soc"):
                 self.soc = float(val) if val is not None else self.soc
             elif topic.endswith("/battery/512/Soh"):
@@ -608,7 +595,6 @@ class CasetaGuardian:
             elif topic.endswith("/battery/512/System/MinCellVoltage"):
                 self.cell_min = float(val) if val is not None else self.cell_min
                 
-            # Telemetria Solar i Xarxa
             elif topic.endswith("/pvinverter/31/Ac/Power"):
                 self.pv_p = float(val) if val is not None else self.pv_p
             elif topic.endswith("/system/0/Ac/Consumption/L1/Power"):
@@ -649,7 +635,6 @@ class CasetaGuardian:
             try:
                 now = time.time()
                 
-                # Keepalive optimitzat cada 20s
                 if now - self.last_keepalive_time >= 20:
                     self.client.publish(f"R/{self.portal_id}/keepalive", "")
                     self.last_keepalive_time = now
