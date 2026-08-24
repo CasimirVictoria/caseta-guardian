@@ -1,3 +1,4 @@
+import datetime
 #!/usr/bin/env python3
 """
 Caseta Status CLI - Tauler de Control Ràpid en Terminal
@@ -204,7 +205,9 @@ def main():
         return
 
     print(f"\n{BOLD}{CYAN}⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡{RESET}")
-    print(f"{DIM}Connectant a Cerbo GX ({CERBO_IP})...{RESET}\n")
+    print(f"{DIM}Connectant a Cerbo GX ({CERBO_IP})...{RESET}")
+    now_ts = datetime.datetime.now().strftime("%d/%m/%Y - %H:%M:%S")
+    print(f"{DIM}🕒 Registre en directe: {now_ts}{RESET}\n")
     
     data, portal, mqtt_stats, mqtt_forecast = get_telemetry()
     if not data or not portal:
