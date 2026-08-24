@@ -104,7 +104,14 @@ def get_telemetry():
         except Exception:
             pass
 
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe(f"N/{found_portal[0]}/#")
+        client.subscribe("caseta/#")
+        client.subscribe(f"N/{found_portal[0]}/caseta/#")
+        client.publish(f"R/{found_portal[0]}/keepalive", "")
+
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2 if hasattr(mqtt, "CallbackAPIVersion") else None)
+    client.on_connect = on_connect
     client.on_message = on_message
     
     try:
@@ -113,11 +120,8 @@ def get_telemetry():
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
         return {}, None, None, None
 
-    client.subscribe("#")
-    client.subscribe("caseta/#")
     client.loop_start()
-    client.publish(f"R/{found_portal[0]}/keepalive", "")
-    time.sleep(1.2)
+    time.sleep(1.5)
     client.loop_stop()
     client.disconnect()
     return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0]
@@ -270,7 +274,9 @@ def main():
     print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actual:.2f} kWh{RESET} actuals | {GREEN}{kwh_fins_tall:.2f} kWh útils (tall 10%){RESET}"))
     print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_marge_sai:.2f} kWh lliures{RESET} (abans del sòl del 65%)"))
     print(box_line(f"   • Tensió i Corrent:        {bat_v:.2f} V  |  {bat_i_str} ({bat_p_str})"))
-    print(box_line(f"   • Cel·les (Min / Màx):     {cell_min:.3f} V / {cell_max:.3f} V (ΔV = {delta_v_str})"))
+    cell_min_str = f"{cell_min:.3f} V" if cell_min is not None else "N/A"
+    cell_max_str = f"{cell_max:.3f} V" if cell_max is not None else "N/A"
+    print(box_line(f"   • Cel·les (Min / Màx):     {cell_min_str} / {cell_max_str} (ΔV = {delta_v_str})"))
     print(box_line(f"   • Temperatura BMS:         {bat_temp:.1f} ºC"))
     
     print("├" + "─" * (BOX_WIDTH + 2) + "┤")
