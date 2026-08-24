@@ -1,6 +1,6 @@
 # 🛡️ Caseta Guardian - Victron ESS & Battery Health Manager
 
-[🇬🇧 English Version](README.md) | [🇦🇩/🇪🇸 Versió en Català](README.ca.md)
+[🇬🇧 English Version](README.md) | <img src="assets/flag_catalonia.svg" alt="Catalunya" width="18" height="12" style="vertical-align: middle;" /> [Versió en Català](README.ca.md)
 
 Lightweight native Python 3 systemd daemon and real-time CLI telemetry dashboard for autonomous energy management, LiFePO4 battery health protection (Pylontech US3000C / US5000), UPS resilience, and smart HVAC control on **Victron ESS installations** (MultiPlus-II 24/3000 or 48/3000, Cerbo GX, AC-Out Solar Inverters).
 
