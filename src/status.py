@@ -90,6 +90,10 @@ def get_telemetry():
     mqtt_stats = [None]
     mqtt_forecast = [None]
 
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe("#")
+        client.publish(f"R/{found_portal[0]}/keepalive", "")
+
     def on_message(client, userdata, msg):
         try:
             parts = msg.topic.split("/")
@@ -104,12 +108,6 @@ def get_telemetry():
         except Exception:
             pass
 
-    def on_connect(client, userdata, flags, rc, properties=None):
-        client.subscribe(f"N/{found_portal[0]}/#")
-        client.subscribe("caseta/#")
-        client.subscribe(f"N/{found_portal[0]}/caseta/#")
-        client.publish(f"R/{found_portal[0]}/keepalive", "")
-
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2 if hasattr(mqtt, "CallbackAPIVersion") else None)
     client.on_connect = on_connect
     client.on_message = on_message
@@ -121,7 +119,11 @@ def get_telemetry():
         return {}, None, None, None
 
     client.loop_start()
-    time.sleep(1.5)
+    for _ in range(20):
+        if f"N/{found_portal[0]}/battery/512/Soc" in data and f"N/{found_portal[0]}/vebus/276/Mode" in data and f"N/{found_portal[0]}/system/0/Ac/Consumption/L1/Power" in data:
+            break
+        client.publish(f"R/{found_portal[0]}/keepalive", "")
+        time.sleep(0.1)
     client.loop_stop()
     client.disconnect()
     return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0]
