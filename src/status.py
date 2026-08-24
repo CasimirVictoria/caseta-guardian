@@ -143,7 +143,19 @@ def get_daily_stats(mqtt_stats=None):
             pass
     return None
 
+def sync_history_from_cerbo():
+    """Sincronitza el fitxer històric des del Cerbo GX abans de mostrar-lo si no estem al mateix Cerbo."""
+    if os.path.exists("/opt/victronenergy") or CERBO_IP in ("127.0.0.1", "localhost"):
+        return
+    try:
+        import subprocess
+        cmd = ["scp", "-o", "ConnectTimeout=2", "-o", "BatchMode=yes", f"root@{CERBO_IP}:/data/caseta-guardian/historic_diari.csv", HISTORY_CSV_FILE]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    except Exception:
+        pass
+
 def show_history():
+    sync_history_from_cerbo()
     print(f"\n{BOLD}{CYAN}📈 HISTÒRIC PERMANENT D'ENERGIA - CASETA D'ADOR 📈{RESET}")
     print(f"{DIM}Fitxer: {HISTORY_CSV_FILE}{RESET}\n")
     
