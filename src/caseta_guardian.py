@@ -355,7 +355,7 @@ class CasetaGuardian:
         
         now = time.time()
         # Avaluem cada 30 segons per respondre àgilment als canvis de núvols o encesa d'aparells
-        if now - self.last_soc_eval_time < 30 and self.last_applied_min_soc is not None:
+        if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:  # Interval suau de 2 minuts
             return
         self.last_soc_eval_time = now
 
