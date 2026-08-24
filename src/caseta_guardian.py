@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Caseta Guardian - Dimoni Natiu de Gestió Energètica i Protecció de Bateria
-Instal·lació Victron ESS (Cerbo GX, MultiPlus-II, Pylontech US3000C, Huawei PV).
+Caseta Guardian - Dimoni de Control Energètic per a Victron ESS + Cerbo GX
+Caseta d'Ador (La Safor, València)
 
-JERARQUIA DE PRIORITATS:
-1. 🛡️ Salut de la Bateria (Prioritat 0 - Top Balancing nocturn/festiu, limitació corrent, escut 65%).
-2. 🔌 Resiliència i SAI (No quedar-se sense llum, reserva tarda/vespre 85%, alerta calor 95-100%, avís tensió baixa <190V).
-3. 🏝️ Zero Regal (Aïllament a Inverter Only si SoC > 84% & injecció > 100W per 30s).
-4. ☀️ Màxim Aprofitament Solar (Ajust de sòl matinal al 70% de 07h a 16h, i càrrega intel·ligent 100% anticipada en caps de setmana/festius).
-5. 📈 Històric Anual Permanent (Registre en CSV permanent per a auditoria i optimització anual).
+Funcions principals:
+1. ☀️ Zero Regal 100% Reversible (Smart Islanding): Obre el relé AC1 en excés solar i reconnecta en sobrecàrrega.
+2. 🕒 Control Circadiari de Minimum SOC: 70% de dia (absorció solar), 85% de tarda (escut SAI) i 100% de nit (balanceig a 7 cts/kWh).
+3. 🏖️ Cap de Setmana / Festiu Avançat: 100% Top-Balancing a la tarda en hores vall contínues (24h a 7 cts/kWh).
+4. 🌤️ Integració Predictiva Open-Meteo: Anticipa onades de calor i ajusta la reserva SAI preventivament.
+5. ❄️ Domòtica d'Emergència Tuya: Apaga l'aire condicionat per IR si la bateria baixa del 65% en aïllat.
+6. 📈 Històric Permanent Diari (CSV): Arxiu cada mitjanit a ~/.local/share/caseta-guardian/historic_diari.csv.
+7. 🚨 Watchdog de Baixa Tensió Rural (<190V durant >2 minuts).
 """
 
 import csv
@@ -17,386 +19,341 @@ import hashlib
 import hmac
 import json
 import logging
-import math
 import os
-import socket
 import ssl
 import sys
 import time
-import urllib.parse
 import urllib.request
+try:
+    import zoneinfo
+    MADRID_TZ = zoneinfo.ZoneInfo("Europe/Madrid")
+except Exception:
+    MADRID_TZ = None
 
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
-    mqtt = None
-
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "config.json")
-config = {}
-if os.path.exists(CONFIG_FILE):
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            config = json.load(f)
-    except Exception:
-        pass
-
-CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.100"))
-MQTT_PORT = int(os.environ.get("MQTT_PORT", config.get("mqtt_port", 1883)))
-PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "48e7da8782fd"))
-
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", config.get("ntfy_topic", "victron_solar_alerts"))
-TUYA_S06_IP = os.environ.get("TUYA_S06_IP", config.get("tuya_s06_ip", "192.168.1.50"))
-TUYA_DEV_ID = os.environ.get("TUYA_DEV_ID", config.get("tuya_dev_id", "your_device_id"))
-TUYA_LOCAL_KEY = os.environ.get("TUYA_LOCAL_KEY", config.get("tuya_local_key", "your_local_key"))
-
-LATITUDE = float(os.environ.get("LATITUDE", config.get("latitude", 39.0)))
-LONGITUDE = float(os.environ.get("LONGITUDE", config.get("longitude", -0.3)))
-
-FORECAST_CACHE_FILE = "/tmp/caseta_forecast_cache.json"
-DAILY_STATS_FILE = "/tmp/caseta_daily_stats.json"
-HISTORY_DIR = os.path.expanduser("~/.local/share/caseta-guardian")
-HISTORY_CSV_FILE = os.path.join(HISTORY_DIR, "historic_diari.csv")
-SECONDBRAIN_CSV_LINK = os.path.expanduser("~/Documents/Segon_Cervell/Notes/historic_caseta.csv")
-
-# Paràmetres de Bateria & Mode MultiPlus
-SOC_ISLANDING_THRESHOLD = 84.0      # SoC mínim per plantejar Mode 2 (Inverter Only)
-GRID_EXPORT_THRESHOLD_W = -100.0    # Potència d'injecció (negativa) per considerar abocament
-EXPORT_TRIGGER_TIME_S = 30.0        # Temps sostingut d'abocament abans d'aïllar (30s)
-
-BATTERY_MAX_REST_CURRENT_A = 2.0    # La bateria ha d'estar descansant (<2A descàrrega) per aïllar
-RECONNECT_MAX_DISCHARGE_A = 15.0    # Si descàrrega > 15A en Mode 2 -> Reconnecta xarxa (5s)
-RECONNECT_MAX_DISCHARGE_TIME_S = 5.0
-RECONNECT_MIN_SOC = 80.0            # Si SoC <= 80% en Mode 2 -> Reconnecta xarxa
-
-MIN_SWITCH_INTERVAL_S = 300.0       # Mínim 5 minuts entre commutacions de relé de xarxa
-KEEPALIVE_INTERVAL_S = 20.0         # Publicar keepalive cada 20s
-LOW_VOLTAGE_THRESHOLD_V = 190.0     # Llindar d'avís de caiguda de línia del carrer
-LOW_VOLTAGE_ALERT_TIME_S = 120.0    # Temps sostingut de tensió baixa (<190V per 2 minuts)
-
-# Escuts de Climatització
-AC_SHIELD_CUTOFF_SOC = 65.0         # Si SoC <= 65% -> Apaga l'aire automàticament
-AC_WARN_SOC = 67.0                  # Si SoC <= 67% -> Envia avís push al mòbil
-
-# Preus Contractats Imagina Energía (CUPS: ES0021000007582432JL - 1.150 kW)
-COST_FIX_DIARI = 0.170              # Potència P1 (0.117€) + P3 (0.026€) + Comptador (0.027€)
-PREU_P1_PUNTA = 0.177691            # 10-14h i 18-22h L-V
-PREU_P2_PLA = 0.103870              # 08-10h, 14-18h, 22-24h L-V
-PREU_P3_VALL = 0.069473             # 00-08h L-V, i 24h Caps de Setmana i Festius Nacionals/Autonòmics
-FACTOR_IMPOSTOS = 1.1418            # Impost Elèctric 3.8% + IVA 10%
+    print("Error: paho-mqtt no està instal·lat. Instal·la'l amb 'uv pip install paho-mqtt'")
+    sys.exit(1)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
-log = logging.getLogger("CasetaGuardian")
+log = logging.getLogger("caseta-guardian")
 
+def get_madrid_now() -> datetime.datetime:
+    """Retorna la data i hora exacta a la zona horària de Madrid (peninsular)."""
+    if MADRID_TZ:
+        return datetime.datetime.now(MADRID_TZ)
+    return datetime.datetime.now()
+
+def get_easter_date(year: int) -> datetime.date:
+    """Calcula el Diumenge de Pasqua amb l'algorisme de Butcher/Gauss."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return datetime.date(year, month, day)
+
+CONFIG_PATHS = [
+    os.path.join(os.path.dirname(__file__), "..", "config.json"),
+    os.path.expanduser("~/Documents/Segon_Cervell/projects/caseta-guardian/config.json"),
+    os.path.expanduser("~/.config/caseta-guardian/config.json"),
+    "/data/caseta-guardian/config.json"
+]
+
+config = {}
+for p in CONFIG_PATHS:
+    if os.path.exists(p):
+        try:
+            with open(p, "r") as f:
+                config = json.load(f)
+            log.info(f"Carregada configuració des de: {p}")
+            break
+        except Exception as e:
+            log.warning(f"No s'ha pogut llegir {p}: {e}")
+
+CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.106"))
+PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "48e7da8782fd"))
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", config.get("ntfy_topic", "caseta_ador_alerts"))
+TUYA_S06_IP = os.environ.get("TUYA_S06_IP", config.get("tuya_s06_ip", "192.168.1.135"))
+HISTORY_CSV_FILE = os.path.expanduser("~/.local/share/caseta-guardian/historic_diari.csv")
+
+# Constants de bateria
+TOTAL_NOMINAL_KWH = 3.552
+BATTERY_SOH_FACTOR = 0.90
+NET_CAPACITY_KWH = TOTAL_NOMINAL_KWH * BATTERY_SOH_FACTOR
+
+# Tarifes 2.0TD Imagina Energía
+P1_RATE = 0.177691
+P2_RATE = 0.103870
+P3_RATE = 0.069473
+POTENCIA_FIXED_DAY = 0.170
+TAX_MULTIPLIER = 1.1418
 
 class CasetaGuardian:
     def __init__(self):
         self.portal_id = PORTAL_ID
         self.client = None
+        self.running = True
         
-        # Estat en temps real
-        self.soc = 95.0
+        # Telemetria en directe
+        self.soc = 0.0
         self.soh = 90.0
-        self.battery_v = 51.2
-        self.battery_i = 0.0
-        self.battery_p = 0.0
-        self.battery_temp = 29.0
-        self.cell_max_v = 3.45
-        self.cell_min_v = 3.38
+        self.bat_v = 0.0
+        self.bat_i = 0.0
+        self.bat_p = 0.0
+        self.cell_max = 0.0
+        self.cell_min = 0.0
+        self.max_cell_delta_today = 0.0
         
+        self.pv_p = 0.0
+        self.ac_loads = 0.0
         self.grid_p = 0.0
         self.grid_v = 220.0
-        self.pv_p = 0.0
-        self.pv_energy_forward = None
-        self.ac_loads = 200.0
-        self.vebus_mode = 3 # 3 = ON, 2 = Inverter Only, 1 = Charger Only, 4 = OFF
-        self.cerbo_min_soc = 70.0
+        self.vebus_mode = 3
+        self.vebus_state = 3
         
-        # Previsió Solar & Clima
-        self.today_kwh_est = 7.0
-        self.tomorrow_kwh_est = 7.0
-        self.remaining_kwh_today = 5.0
-        self.max_temp_today = 32.0
-        self.sunset_temp = 28.0
-        self.blackout_risk = 20
-        self.target_reserve_soc = 85.0
-        self.last_applied_min_soc = None
-        
-        # Comptadors Diaris & Acumulats
-        self.current_day_str = time.strftime("%Y-%m-%d")
-        self.solar_start_kwh = None
-        self.solar_kwh_today = 0.0
-        self.consumption_kwh_today = 0.0
-        self.grid_import_kwh_today = 0.0
-        self.grid_export_kwh_today = 0.0
-        self.solar_peak_w = 0.0
-        self.grid_cost_energy_today = 0.0
-        self.cost_total_today = 0.0
-        self.mode2_time_seconds = 0.0
-        self.relay_switch_count = 0
-        self.max_delta_v_mv = 0.0
-        
-        self.ensure_history_storage()
-        self.load_daily_stats()
-        
-        # Comptadors de Temps & Histèresi
-        self.last_mode_switch_time = 0.0
-        self.last_eval_time = time.time()
-        self.last_keepalive_time = 0.0
+        # Comptadors i temporitzadors
         self.export_start_time = None
         self.high_discharge_start_time = None
         self.low_voltage_start_time = None
-        self.low_voltage_alert_sent = False
-        self.warn_67_sent = False
-        self.ac_cutoff_sent = False
-        self.last_openmeteo_fetch = 0.0
+        self.last_mode_switch_time = 0.0
+        self.last_forecast_time = 0.0
+        self.last_stats_calc_time = 0.0
+        self.last_keepalive_time = 0.0
+        self.last_applied_min_soc = None
+        
+        # Previsió Open-Meteo
+        self.today_kwh_est = 5.0
+        self.remaining_kwh_today = 3.0
+        self.tomorrow_kwh_est = 5.0
+        self.max_temp_today = 30.0
+        self.sunset_temp_today = 26.0
+        self.blackout_risk = 0
+        self.target_reserve_soc = 85.0
+        
+        # Acumulats d'avui
+        self.current_day_str = get_madrid_now().strftime("%Y-%m-%d")
+        self.solar_kwh_today = 0.0
+        self.solar_peak_w = 0.0
+        self.consumption_kwh_today = 0.0
+        self.grid_import_kwh_today = 0.0
+        self.grid_export_kwh_today = 0.0
+        self.p1_kwh_today = 0.0
+        self.p2_kwh_today = 0.0
+        self.p3_kwh_today = 0.0
+        self.mode2_time_seconds = 0.0
+        self.relay_switch_count = 0
+        self.tuya_ac_turned_off_today = False
+        
+        os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
+        self.init_history_csv()
 
-    def ensure_history_storage(self):
-        """Assegura l'existència del directori i fitxer d'històric permanent."""
-        try:
-            os.makedirs(HISTORY_DIR, exist_ok=True)
-            if not os.path.exists(HISTORY_CSV_FILE):
+    def init_history_csv(self):
+        if not os.path.exists(HISTORY_CSV_FILE):
+            try:
                 with open(HISTORY_CSV_FILE, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow([
+                    w = csv.writer(f)
+                    w.writerow([
                         "Data", "Solar_kWh", "Consum_kWh", "Importat_kWh", "Exportat_kWh",
                         "Cobertura_Solar_Pct", "Cost_Total_EUR", "Temps_Mode2_Min",
                         "Canvis_Rele", "Max_DeltaV_mV", "SoH_BMS_Pct", "Es_CapSetmana_o_Festiu"
                     ])
-            
-            # Enllaç directe a Segon Cervell si no existeix
-            note_dir = os.path.dirname(SECONDBRAIN_CSV_LINK)
-            if os.path.exists(note_dir) and not os.path.exists(SECONDBRAIN_CSV_LINK):
-                try:
-                    os.symlink(HISTORY_CSV_FILE, SECONDBRAIN_CSV_LINK)
-                except Exception:
-                    pass
-        except Exception as e:
-            log.warning(f"Error inicialitzant històric: {e}")
+            except Exception as e:
+                log.warning(f"No s'ha pogut inicialitzar {HISTORY_CSV_FILE}: {e}")
 
-    def append_to_history(self, date_str: str, sol_kwh: float, con_kwh: float, imp_kwh: float, exp_kwh: float, cov_pct: float, cost: float, m2_sec: float, switches: int, max_dv: float, soh: float, is_hol: bool):
-        """Afegeix una fila completa del dia finalitzat a l'històric permanent."""
+    def append_to_history(self, date_str: str):
         try:
-            m2_min = round(m2_sec / 60.0, 1)
-            # Evitar duplicats comprovant si la data ja existeix
-            existing_dates = set()
-            if os.path.exists(HISTORY_CSV_FILE):
-                with open(HISTORY_CSV_FILE, "r") as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        if row:
-                            existing_dates.add(row[0])
+            cov = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
+            cost = self.calculate_today_cost()
+            is_hol = "SI" if self.is_holiday_or_weekend() else "NO"
             
-            if date_str not in existing_dates:
-                with open(HISTORY_CSV_FILE, "a", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow([
-                        date_str, f"{sol_kwh:.2f}", f"{con_kwh:.2f}", f"{imp_kwh:.2f}", f"{exp_kwh:.2f}",
-                        f"{cov_pct:.1f}", f"{cost:.2f}", f"{m2_min:.1f}", switches, f"{max_dv:.0f}",
-                        f"{soh:.0f}", "SI" if is_hol else "NO"
-                    ])
-                log.info(f"📁 [HISTÒRIC PERMANENT] Dia {date_str} arxivat amb èxit ({sol_kwh:.2f} kWh solars, {con_kwh:.2f} kWh consum, {cost:.2f} €).")
+            with open(HISTORY_CSV_FILE, "a", newline="") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    date_str,
+                    f"{self.solar_kwh_today:.2f}",
+                    f"{self.consumption_kwh_today:.2f}",
+                    f"{self.grid_import_kwh_today:.2f}",
+                    f"{self.grid_export_kwh_today:.2f}",
+                    f"{min(100.0, cov):.1f}",
+                    f"{cost:.2f}",
+                    f"{self.mode2_time_seconds / 60.0:.1f}",
+                    self.relay_switch_count,
+                    f"{self.max_cell_delta_today:.0f}",
+                    f"{self.soh:.0f}",
+                    is_hol
+                ])
+            log.info(f"📁 [HISTÒRIC PERMANENT] Dia {date_str} arxivat amb èxit ({self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum, {cost:.2f} €).")
         except Exception as e:
-            log.warning(f"Error desant a l'històric CSV: {e}")
+            log.error(f"Error registrant històric permanent diari: {e}")
 
-    def is_holiday_or_weekend(self, t=None):
-        """Determina si una data és cap de setmana o festiu oficial (P3 Vall 24h a Espanya / C. Valenciana)."""
-        if t is None:
-            t = time.localtime()
-        if t.tm_wday >= 5:
-            return True
-        
-        year, month, day = t.tm_year, t.tm_mon, t.tm_mday
-        fixed_holidays = {
-            (1, 1), (1, 6), (3, 19), (5, 1), (6, 24),
-            (8, 15), (10, 9), (10, 12), (11, 1), (12, 6), (12, 8), (12, 25)
-        }
-        if (month, day) in fixed_holidays:
+    def send_notification(self, title: str, message: str, priority: str = "default", tags: str = "zap"):
+        try:
+            url = f"https://ntfy.sh/{NTFY_TOPIC}"
+            data = message.encode("utf-8")
+            req = urllib.request.Request(url, data=data, method="POST")
+            req.add_header("Title", title)
+            req.add_header("Priority", priority)
+            req.add_header("Tags", tags)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    log.info(f"📱 Notificació enviada al mòbil: {title}")
+        except Exception as e:
+            log.warning(f"No s'ha pogut enviar notificació ntfy: {e}")
+
+    def is_holiday_or_weekend(self) -> bool:
+        """Determina si avui és cap de setmana o festiu oficial (P3 Vall 24h)."""
+        now = get_madrid_now()
+        if now.weekday() in (5, 6): # Dissabte o Diumenge
             return True
             
-        # Festius mòbils de Pasqua (Gauss / Butcher)
-        a = year % 19
-        b = year // 100
-        c = year % 100
-        d_div = b // 4
-        e = b % 4
-        f = (b + 8) // 25
-        g = (b - f + 1) // 3
-        h = (19 * a + b - d_div - g + 15) % 30
-        i = c // 4
-        k = c % 4
-        l = (32 + 2 * e + 2 * i - h - k) % 7
-        m = (a + 11 * h + 22 * l) // 451
-        easter_m = (h + l - 7 * m + 114) // 31
-        easter_d = ((h + l - 7 * m + 114) % 31) + 1
+        y, m, d = now.year, now.month, now.day
+        fixed_holidays = [
+            (1, 1),   # Any Nou
+            (1, 6),   # Reis Mags
+            (3, 19),  # Sant Josep (CV)
+            (5, 1),   # Festa del Treball
+            (6, 24),  # Sant Joan (CV)
+            (8, 15),  # Assumpció de la Verge
+            (10, 9),  # Dia de la Comunitat Valenciana
+            (10, 12), # Festa Nacional d'Espanya
+            (11, 1),  # Tots Sants
+            (12, 6),  # Dia de la Constitució
+            (12, 8),  # Immaculada Concepció
+            (12, 25), # Nadal
+        ]
+        if (m, d) in fixed_holidays:
+            return True
+            
+        easter = get_easter_date(y)
+        good_friday = easter - datetime.timedelta(days=2)
+        easter_monday = easter + datetime.timedelta(days=1)
         
-        easter_date = datetime.date(year, easter_m, easter_d)
-        good_friday = easter_date - datetime.timedelta(days=2)
-        easter_monday = easter_date + datetime.timedelta(days=1)
-        
-        cur_date = datetime.date(year, month, day)
-        if cur_date in (good_friday, easter_monday):
+        today_date = now.date()
+        if today_date in (good_friday, easter_monday):
             return True
             
         return False
 
-    def get_current_kwh_rate(self):
-        """Retorna el preu contractat per kWh segons la franja horària, cap de setmana i festius."""
-        t = time.localtime()
-        if self.is_holiday_or_weekend(t):
-            return PREU_P3_VALL
-        
-        h = t.tm_hour
-        if 0 <= h < 8:
-            return PREU_P3_VALL
-        elif (10 <= h < 14) or (18 <= h < 22):
-            return PREU_P1_PUNTA
-        else:
-            return PREU_P2_PLA
-
-    def load_daily_stats(self):
-        """Carrega o inicialitza les estadístiques diàries des de disc."""
-        if os.path.exists(DAILY_STATS_FILE):
-            try:
-                with open(DAILY_STATS_FILE, "r") as f:
-                    data = json.load(f)
-                if data.get("date") == self.current_day_str:
-                    self.solar_start_kwh = data.get("solar_start_kwh")
-                    self.solar_kwh_today = data.get("solar_kwh_today", 0.0)
-                    self.consumption_kwh_today = data.get("consumption_kwh_today", 0.0)
-                    self.grid_import_kwh_today = data.get("grid_import_kwh_today", 0.0)
-                    self.grid_export_kwh_today = data.get("grid_export_kwh_today", 0.0)
-                    self.solar_peak_w = data.get("solar_peak_w", 0.0)
-                    self.grid_cost_energy_today = data.get("grid_cost_energy_today", 0.0)
-                    self.cost_total_today = data.get("cost_total_today", round(COST_FIX_DIARI * FACTOR_IMPOSTOS, 2))
-                    self.mode2_time_seconds = data.get("mode2_time_seconds", 0.0)
-                    self.relay_switch_count = data.get("relay_switch_count", 0)
-                    self.max_delta_v_mv = data.get("max_delta_v_mv", 0.0)
-            except Exception:
-                pass
-
-    def save_daily_stats(self):
-        """Desa les estadístiques diàries i arxiva el dia anterior en canviar la data (00:00h)."""
-        today = time.strftime("%Y-%m-%d")
-        if today != self.current_day_str:
-            # 📁 Canvi de dia (00:00h): Arxiva el dia complet a l'històric permanent CSV
-            solar_cov = round((self.solar_kwh_today / self.consumption_kwh_today * 100.0), 1) if self.consumption_kwh_today > 0 else 0.0
-            self.append_to_history(
-                self.current_day_str, self.solar_kwh_today, self.consumption_kwh_today,
-                self.grid_import_kwh_today, self.grid_export_kwh_today, solar_cov,
-                self.cost_total_today, self.mode2_time_seconds, self.relay_switch_count,
-                self.max_delta_v_mv, self.soh, self.is_holiday_or_weekend()
-            )
+    def update_energy_forecast(self):
+        """Consulta Open-Meteo per estimar radiació solar i temperatura màxima a Ador."""
+        now = time.time()
+        if now - self.last_forecast_time < 1800: # cada 30 min
+            return
             
-            # Reinicialització de comptadors per al nou dia
-            self.current_day_str = today
-            self.solar_start_kwh = self.pv_energy_forward
-            self.solar_kwh_today = 0.0
-            self.consumption_kwh_today = 0.0
-            self.grid_import_kwh_today = 0.0
-            self.grid_export_kwh_today = 0.0
-            self.solar_peak_w = 0.0
-            self.grid_cost_energy_today = 0.0
-            self.cost_total_today = round(COST_FIX_DIARI * FACTOR_IMPOSTOS, 2)
-            self.mode2_time_seconds = 0.0
-            self.relay_switch_count = 0
-            self.max_delta_v_mv = 0.0
-
-        solar_cov = round((self.solar_kwh_today / self.consumption_kwh_today * 100.0), 1) if self.consumption_kwh_today > 0 else 0.0
-        subtotal = COST_FIX_DIARI + self.grid_cost_energy_today
-        self.cost_total_today = subtotal * FACTOR_IMPOSTOS
-
-        payload = {
-            "date": self.current_day_str,
-            "solar_start_kwh": self.solar_start_kwh,
-            "solar_kwh_today": round(self.solar_kwh_today, 2),
-            "consumption_kwh_today": round(self.consumption_kwh_today, 2),
-            "grid_import_kwh_today": round(self.grid_import_kwh_today, 2),
-            "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
-            "solar_peak_w": round(self.solar_peak_w, 1),
-            "solar_coverage_percent": min(100.0, solar_cov),
-            "grid_cost_energy_today": round(self.grid_cost_energy_today, 4),
-            "cost_total_today": round(self.cost_total_today, 2),
-            "mode2_time_seconds": round(self.mode2_time_seconds, 1),
-            "relay_switch_count": self.relay_switch_count,
-            "max_delta_v_mv": round(self.max_delta_v_mv, 0),
-            "is_weekend_or_holiday": self.is_holiday_or_weekend()
-        }
+        self.last_forecast_time = now
         try:
-            with open(DAILY_STATS_FILE, "w") as f:
-                json.dump(payload, f)
-        except Exception:
-            pass
+            url = "https://api.open-meteo.com/v1/forecast?latitude=39.0&longitude=-0.3&daily=shortwave_radiation_sum,temperature_2m_max&hourly=direct_normal_irradiance,temperature_2m&timezone=Europe%2FMadrid&forecast_days=2"
+            req = urllib.request.Request(url, headers={"User-Agent": "CasetaGuardian/2.0"})
+            with urllib.request.urlopen(req, timeout=10) as rep:
+                data = json.loads(rep.read().decode())
+                
+            daily = data.get("daily", {})
+            rad_list = daily.get("shortwave_radiation_sum", [22.0, 22.0])
+            temp_max_list = daily.get("temperature_2m_max", [30.0, 30.0])
+            
+            # 1.35 kWp Huawei * radiació MJ/m2 * factor de conversió
+            self.today_kwh_est = max(1.0, (rad_list[0] / 3.6) * 1.35 * 0.78)
+            self.tomorrow_kwh_est = max(1.0, (rad_list[1] / 3.6) * 1.35 * 0.78)
+            self.max_temp_today = temp_max_list[0]
+            
+            # Radiació restant avui
+            hourly = data.get("hourly", {})
+            dni = hourly.get("direct_normal_irradiance", [])
+            temps = hourly.get("temperature_2m", [])
+            current_hour = get_madrid_now().hour
+            
+            if len(dni) >= 24:
+                remaining_dni = sum(dni[current_hour:24])
+                total_dni = max(1.0, sum(dni[0:24]))
+                self.remaining_kwh_today = self.today_kwh_est * (remaining_dni / total_dni)
+            else:
+                self.remaining_kwh_today = max(0.0, self.today_kwh_est * (1.0 - (current_hour / 20.0)))
+                
+            if len(temps) >= 22:
+                self.sunset_temp_today = temps[21]
+            else:
+                self.sunset_temp_today = self.max_temp_today - 4.0
+                
+            # Risc d'apagada per sobrecàrrega rural d'estiu
+            if self.max_temp_today >= 38.0:
+                self.blackout_risk = 70
+            elif self.max_temp_today >= 34.0:
+                self.blackout_risk = 45
+            elif self.max_temp_today >= 31.0:
+                self.blackout_risk = 25
+            else:
+                self.blackout_risk = 10
 
-    def send_ntfy(self, title: str, message: str, priority: str = "default", tags: str = "battery,warning"):
-        """Envia notificació push instantània al mòbil mitjançant ntfy.sh."""
-        url = f"https://ntfy.sh/{NTFY_TOPIC}"
-        try:
-            req = urllib.request.Request(
-                url,
-                data=message.encode("utf-8"),
-                headers={
-                    "Title": title.encode("utf-8"),
-                    "Priority": priority,
-                    "Tags": tags
-                },
-                method="POST"
-            )
-            ctx = ssl.create_default_context()
-            with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
-                log.info(f"📱 Notificació enviada al mòbil: {title}")
+            log.info(f"📊 Open-Meteo: Sol total = {self.today_kwh_est:.1f} kWh (Queden {self.remaining_kwh_today:.1f} kWh) | Màx = {self.max_temp_today:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc:.0f}%")
+            
+            # Desa cache per a l'script 'caseta'
+            cache = {
+                "today_kwh": round(self.today_kwh_est, 1),
+                "remaining_kwh": round(self.remaining_kwh_today, 1),
+                "tomorrow_kwh": round(self.tomorrow_kwh_est, 1),
+                "max_temp_today": round(self.max_temp_today, 1),
+                "sunset_temp": round(self.sunset_temp_today, 1),
+                "blackout_risk": self.blackout_risk,
+                "target_reserve_soc": self.target_reserve_soc,
+                "timestamp": now
+            }
+            with open("/tmp/caseta_forecast_cache.json", "w") as f:
+                json.dump(cache, f)
+                
         except Exception as e:
-            log.warning(f"Error enviant notificació ntfy: {e}")
+            log.warning(f"Error actualitzant Open-Meteo: {e}")
 
-    def send_tuya_ir_power_off(self):
-        """Envia ordre infraroja per apagar l'aire condicionat via Tuya Cloud Open API."""
-        log.info("❄️ [ESCUT CRÍTIC] Apagant aire condicionat per protegir la reserva de bateria...")
+    def trigger_tuya_ac_off(self):
+        """Envia l'ordre d'apagar l'aire condicionat per infrarojos Tuya en emergència."""
+        if self.tuya_ac_turned_off_today:
+            return
+            
+        log.info("❄️ [ESCUT CLIMÀTIC] Apagant Aire Condicionat per infrarojos Tuya...")
+        self.tuya_ac_turned_off_today = True
+        
+        # 1. Intent Local directe (tinytuya)
         try:
-            client_id = config.get("tuya_client_id", "YOUR_TUYA_CLIENT_ID")
-            secret = config.get("tuya_secret", "YOUR_TUYA_SECRET")
-            infrared_id = config.get("tuya_infrared_id", "YOUR_INFRARED_GATEWAY_ID")
-            remote_id = config.get("tuya_remote_id", "YOUR_AC_REMOTE_ID")
+            import tinytuya
+            dev_id = config.get("tuya_s06_id", "bf5377f0d014d59a72kexi")
+            loc_key = config.get("tuya_s06_key", "7e813a8b417e29cf")
+            ir = tinytuya.OutletDevice(dev_id, TUYA_S06_IP, loc_key, version=3.3)
+            ir.set_status(False, 1)
+            log.info("❄️ Comanda Tuya Local transmesa amb èxit!")
+            self.send_notification("❄️ Escut Domòtic Activat", "S'ha apagat l'aire condicionat automàticament per protegir la reserva del 65% de la bateria!", "high", "snowflake")
+            return
+        except Exception as e:
+            log.warning(f"Comanda Tuya Local no disponible ({e}). Provant Tuya Cloud...")
+
+        # 2. Intent Tuya Cloud API
+        try:
+            cid = config.get("tuya_cloud_client_id", "v9mkg98345ektd4p4m7u")
+            sec = config.get("tuya_cloud_secret", "d1326442650c45169a9b8979ceb649ee")
+            dev_id = config.get("tuya_s06_id", "bf5377f0d014d59a72kexi")
+            
+            t_ms = str(int(time.time() * 1000))
             base_url = "https://openapi.tuyaeu.com"
-
-            # 1. Obtenir token
-            t = str(int(time.time() * 1000))
-            urlPath = "/v1.0/token?grant_type=1"
-            contentHash = hashlib.sha256(b"").hexdigest()
-            stringToSign = f"GET\n{contentHash}\n\n{urlPath}"
-            signStr = f"{client_id}{t}{stringToSign}"
-            sign = hmac.new(secret.encode(), signStr.encode(), hashlib.sha256).hexdigest().upper()
-
-            headers = {
-                "client_id": client_id,
-                "sign": sign,
-                "t": t,
-                "sign_method": "HMAC-SHA256",
-                "Content-Type": "application/json"
-            }
-            req = urllib.request.Request(f"{base_url}{urlPath}", headers=headers)
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                res = json.loads(resp.read().decode())
-                token = res["result"]["access_token"]
-
-            # 2. Enviar ordre Power Off (0)
-            t_now = str(int(time.time() * 1000))
-            path = f"/v2.0/infrareds/{infrared_id}/air-conditioners/{remote_id}/command"
-            body = json.dumps({"code": "power", "value": 0})
-            cHash = hashlib.sha256(body.encode()).hexdigest()
-            sToSign = f"POST\n{cHash}\n\n{path}"
-            sStr = f"{client_id}{token}{t_now}{sToSign}"
-            s = hmac.new(secret.encode(), sStr.encode(), hashlib.sha256).hexdigest().upper()
-            h = {
-                "client_id": client_id,
-                "access_token": token,
-                "sign": s,
-                "t": t_now,
-                "sign_method": "HMAC-SHA256",
-                "Content-Type": "application/json"
-            }
+            path = f"/v1.0/devices/{dev_id}/commands"
+            body = json.dumps({"commands": [{"code": "power", "value": False}]})
+            
+            str_to_sign = f"{cid}{t_ms}POST\n{hashlib.sha256(body.encode()).hexdigest()}\n\n{path}"
+            sign = hmac.new(sec.encode(), str_to_sign.encode(), hashlib.sha256).hexdigest().upper()
+            
+            h = {"client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"}
             r = urllib.request.Request(f"{base_url}{path}", data=body.encode(), headers=h, method="POST")
             with urllib.request.urlopen(r, timeout=5) as rep:
                 result_data = json.loads(rep.read().decode())
@@ -408,51 +365,45 @@ class CasetaGuardian:
             log.warning(f"Error enviant comanda Tuya Cloud: {e}")
 
     def sync_cerbo_min_soc(self):
-        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora, balanç energètic, cap de setmana/festiu i clima."""
+        """Sincronitza el Minimum SOC de l'ESS del Cerbo GX segons l'hora de Madrid, balanç energètic, cap de setmana/festiu i clima."""
         if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
             return
         
-        current_hour = int(time.strftime("%H"))
+        now_madrid = get_madrid_now()
+        current_hour = now_madrid.hour
         is_weekend_or_hol = self.is_holiday_or_weekend()
         
-        # 1. 🌙 Nit Supervall (00:01h a 06:59h): Top-Balancing i 100% de SAI a 7 cts/kWh
+        # 1. 🌙 Nit Supervall (00:00h a 06:59h Madrid): Top-Balancing i 100% de SAI a 7 cts/kWh
         if 0 <= current_hour < 7:
             target = 100.0
             phase_name = "🌙 Nit Supervall (100% Top-Balancing & SAI Màxim)"
             
-        # 2. 🔥 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
-        elif self.blackout_risk >= 60:
-            target = 95.0
-            phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
-            
-        # 3. ⚠️ Alerta de Calor Moderada (Risc >= 30%)
-        elif self.blackout_risk >= 30:
-            target = 85.0
-            phase_name = "⚠️ Calor Moderada (85% Reserva Preventiva)"
-
-        # 4. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
-        elif is_weekend_or_hol and (current_hour >= 18 or (current_hour >= 16 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
-            target = 100.0
-            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat - Vall 24h a 7 cts)"
-            
-        # 5. ☀️ Franja Diürna Feiners (07:00h a 19:59h):
-        elif 7 <= current_hour < 20:
-            is_afternoon = (current_hour >= 16) or (self.remaining_kwh_today < 2.0)
-            
-            if is_afternoon:
-                target = 85.0
-                phase_name = "🌇 Tarda / Vespre Resilient (85% Màxima Seguretat & SAI)"
-            elif self.today_kwh_est >= 5.0:
+        # 2. ☀️ Franja Diürna Solar (07:00h a 15:59h Madrid - Feiners i Caps de Setmana):
+        # Baixem el sòl al 70% per deixar un 30% buit a la bateria per engolir el sol
+        elif 7 <= current_hour < 16:
+            if self.blackout_risk >= 60:
+                target = 95.0
+                phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
+            elif self.today_kwh_est >= 4.5:
                 target = 70.0
                 phase_name = "☀️ Dia Radiant (70% per absorbir excedent solar)"
             else:
                 target = 85.0
-                phase_name = "☁️ Dia Variable / Tarda (85% Coixí Solar)"
-                
-        # 6. 🌆 Vespre Feiner (20:00h a 23:59h): Coixí de transició abans de la nit
+                phase_name = "☁️ Dia Variable / Baix Sol (85% Coixí Preventiu)"
+
+        # 3. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
+        elif is_weekend_or_hol and (current_hour >= 18 or (current_hour >= 16 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
+            target = 100.0
+            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat - Vall 24h a 7 cts)"
+            
+        # 4. 🌇 Tarda / Vespre Feiners (16:00h a 23:59h Madrid):
         else:
-            target = 85.0
-            phase_name = "🌆 Vespre Feiner (85% Coixí Evita Preus Pla/Punta)"
+            if self.blackout_risk >= 60:
+                target = 95.0
+                phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
+            else:
+                target = 85.0
+                phase_name = "🌇 Tarda / Vespre Resilient (85% Màxima Seguretat & SAI)"
 
         self.target_reserve_soc = target
 
@@ -463,317 +414,261 @@ class CasetaGuardian:
             log.info(f"⚙️ Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% [{phase_name}]")
             self.last_applied_min_soc = target
 
-    def update_open_meteo_forecast(self):
-        """Consulta Open-Meteo per a radiació i càlcul de risc d'apagada."""
+    def set_multiplus_mode(self, target_mode: int, reason: str):
         now = time.time()
-        if now - self.last_openmeteo_fetch < 1800 and os.path.exists(FORECAST_CACHE_FILE):
-            self.sync_cerbo_min_soc()
+        if now - self.last_mode_switch_time < 20: # protecció histeresi
             return
+            
+        mode_names = {1: "Charger Only", 2: "Inverter Only (Aïllat)", 3: "ON (Connectat a Xarxa)", 4: "OFF"}
+        old_mode_str = mode_names.get(self.vebus_mode, f"Mode {self.vebus_mode}")
+        new_mode_str = mode_names.get(target_mode, f"Mode {target_mode}")
         
-        self.last_openmeteo_fetch = now
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=direct_radiation,diffuse_radiation,global_tilted_irradiance,temperature_2m&timezone=auto&forecast_days=2"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "CasetaGuardian/1.0"})
-            ctx = ssl.create_default_context()
-            with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
-                data = json.loads(resp.read().decode())
-                
-            hourly = data.get("hourly", {})
-            times = hourly.get("time", [])
-            temps = hourly.get("temperature_2m", [])
-            rads = hourly.get("global_tilted_irradiance", hourly.get("direct_radiation", []))
-            
-            today_str = time.strftime("%Y-%m-%d")
-            current_hour = int(time.strftime("%H"))
-            today_kwh = 0.0
-            tomorrow_kwh = 0.0
-            remaining_kwh = 0.0
-            max_temp = 25.0
-            sunset_temp = 25.0
-            
-            for t, temp, rad in zip(times, temps, rads):
-                est_w = min(1350, max(0, (rad / 1000.0) * 1350 * 0.82))
-                if t.startswith(today_str):
-                    today_kwh += est_w / 1000.0
-                    h_int = int(t.split("T")[1][:2])
-                    if h_int >= current_hour:
-                        remaining_kwh += est_w / 1000.0
-                    if temp > max_temp:
-                        max_temp = temp
-                    if "T21:" in t:
-                        sunset_temp = temp
-                else:
-                    tomorrow_kwh += est_w / 1000.0
-            
-            self.today_kwh_est = today_kwh
-            self.tomorrow_kwh_est = tomorrow_kwh
-            self.remaining_kwh_today = remaining_kwh
-            self.max_temp_today = max_temp
-            self.sunset_temp = sunset_temp
-            
-            # Càlcul d'Índex de Risc de Tall / Col·lapse Zonal
-            risk = 0
-            if max_temp >= 38: risk += 40
-            elif max_temp >= 35: risk += 25
-            elif max_temp >= 32: risk += 10
-            
-            if sunset_temp >= 31: risk += 40
-            elif sunset_temp >= 29: risk += 25
-            elif sunset_temp >= 27: risk += 10
-            
-            if self.grid_v < 195: risk += 20
-            elif self.grid_v < 205: risk += 10
-            
-            self.blackout_risk = min(100, max(0, risk))
-            self.sync_cerbo_min_soc()
-                
-            cache_payload = {
-                "timestamp": now,
-                "today_kwh": round(today_kwh, 2),
-                "tomorrow_kwh": round(tomorrow_kwh, 2),
-                "remaining_kwh_today": round(remaining_kwh, 2),
-                "max_temp_today": round(max_temp, 1),
-                "sunset_temp": round(sunset_temp, 1),
-                "blackout_risk": self.blackout_risk,
-                "target_reserve_soc": self.target_reserve_soc
-            }
-            with open(FORECAST_CACHE_FILE, "w") as f:
-                json.dump(cache_payload, f)
-
-            log.info(f"📊 Open-Meteo: Sol total = {today_kwh:.1f} kWh (Queden {remaining_kwh:.1f} kWh) | Màx = {max_temp:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc:.0f}%")
-        except Exception as e:
-            log.warning(f"Avís consultant Open-Meteo: {e}")
-
-    def set_vebus_mode(self, new_mode: int, reason: str):
-        """Canvia el mode del MultiPlus (2 = Inverter Only / Aïllat, 3 = ON / Connectat)."""
-        now = time.time()
-        if now - self.last_mode_switch_time < MIN_SWITCH_INTERVAL_S:
-            remaining = int(MIN_SWITCH_INTERVAL_S - (now - self.last_mode_switch_time))
-            log.debug(f"Histèresi de relé activa ({remaining}s restants). Ignorant canvi de mode a {new_mode}.")
-            return
+        log.info(f"🔄 CANVI DE MODE MULTIPLUS: {old_mode_str} -> {new_mode_str} ({reason})")
+        topic = f"W/{self.portal_id}/vebus/276/Mode"
+        payload = json.dumps({"value": target_mode})
+        self.client.publish(topic, payload)
         
-        if self.vebus_mode == new_mode:
-            return
-        
-        log.info(f"🔄 CANVI DE MODE MULTIPLUS: Mode {self.vebus_mode} -> Mode {new_mode} ({reason})")
+        self.vebus_mode = target_mode
         self.last_mode_switch_time = now
-        self.vebus_mode = new_mode
         self.relay_switch_count += 1
         
-        if self.client:
-            topic = f"W/{self.portal_id}/vebus/276/Mode"
-            payload = json.dumps({"value": new_mode})
-            self.client.publish(topic, payload)
-            
-            mode_name = "🏝️ Inverter Only (Mode Aïllat)" if new_mode == 2 else "🔌 ON (Connectat a Xarxa)"
-            self.send_ntfy("Canvi de Mode MultiPlus", f"{mode_name}\nMotiu: {reason}", priority="low", tags="electric_plug")
+        priority = "high" if target_mode == 2 else "default"
+        self.send_notification("Canvi de Mode MultiPlus", f"{old_mode_str} ➡️ {new_mode_str}\n{reason}", priority=priority)
 
-    def evaluate_system(self):
-        """Motor principal d'avaluació de prioritats i integració d'energia (Executat cada 2s)."""
+    def calculate_today_cost(self) -> float:
+        energy_cost = (self.p1_kwh_today * P1_RATE) + (self.p2_kwh_today * P2_RATE) + (self.p3_kwh_today * P3_RATE)
+        total_subtotal = POTENCIA_FIXED_DAY + energy_cost
+        return round(total_subtotal * TAX_MULTIPLIER, 2)
+
+    def update_energy_integrals(self):
         now = time.time()
-        dt_s = max(0.5, min(10.0, now - self.last_eval_time))
-        self.last_eval_time = now
-
-        # Integració Numèrica d'Energia en kWh i Cost
-        kwh_step = (dt_s / 3600.0) / 1000.0
-        if self.ac_loads > 0:
-            self.consumption_kwh_today += self.ac_loads * kwh_step
-        if self.grid_p > 0:
-            kwh_imported_step = self.grid_p * kwh_step
-            self.grid_import_kwh_today += kwh_imported_step
-            self.grid_cost_energy_today += kwh_imported_step * self.get_current_kwh_rate()
-        elif self.grid_p < -50:
-            self.grid_export_kwh_today += abs(self.grid_p) * kwh_step
-
-        if self.pv_p > self.solar_peak_w:
-            self.solar_peak_w = self.pv_p
-
-        # Integració del temps en Mode 2 (Aïllat)
-        if self.vebus_mode == 2:
-            self.mode2_time_seconds += dt_s
-
-        # Seguiment de Delta V màxim de cel·les
-        if self.cell_max_v and self.cell_min_v:
-            dv = (self.cell_max_v - self.cell_min_v) * 1000.0
-            if dv > self.max_delta_v_mv:
-                self.max_delta_v_mv = dv
-
-        # Càlcul de Producció Solar des del comptador Carlo Gavazzi
-        if self.pv_energy_forward is not None:
-            if self.solar_start_kwh is None:
-                self.solar_start_kwh = self.pv_energy_forward
-            self.solar_kwh_today = max(0.0, self.pv_energy_forward - self.solar_start_kwh)
-        else:
-            if self.pv_p > 0:
-                self.solar_kwh_today += self.pv_p * kwh_step
-
-        self.save_daily_stats()
-        
-        # 1. Escut de Seguretat de Climatització (<65% SoC)
-        if self.soc <= AC_SHIELD_CUTOFF_SOC:
-            if not self.ac_cutoff_sent:
-                self.send_tuya_ir_power_off()
-                self.send_ntfy("🚨 Apagada d'Emergència Aire", f"Bateria ha baixat al {self.soc:.1f}%. Aire apagat per protegir la reserva intocable.", priority="high", tags="warning,snowflake")
-                self.ac_cutoff_sent = True
-        elif self.soc > 70.0:
-            self.ac_cutoff_sent = False
+        if self.last_stats_calc_time == 0.0:
+            self.last_stats_calc_time = now
+            return
             
-        # 2. Avís Precoç al Mòbil (<=67% SoC)
-        if self.soc <= AC_WARN_SOC and not self.warn_67_sent and not self.ac_cutoff_sent:
-            self.send_ntfy("🔋 Atenció: Bateria al 67%", f"La bateria està al {self.soc:.1f}%. Si l'aire està encès, s'apagarà automàticament al {AC_SHIELD_CUTOFF_SOC}% per protegir la casa.", priority="default", tags="battery")
-            self.warn_67_sent = True
-        elif self.soc > 72.0:
-            self.warn_67_sent = False
+        dt = now - self.last_stats_calc_time
+        self.last_stats_calc_time = now
+        
+        # Reset diari a mitjanit (hora de Madrid)
+        today_str = get_madrid_now().strftime("%Y-%m-%d")
+        if today_str != self.current_day_str:
+            self.append_to_history(self.current_day_str)
+            self.current_day_str = today_str
+            self.solar_kwh_today = 0.0
+            self.solar_peak_w = 0.0
+            self.consumption_kwh_today = 0.0
+            self.grid_import_kwh_today = 0.0
+            self.grid_export_kwh_today = 0.0
+            self.p1_kwh_today = 0.0
+            self.p2_kwh_today = 0.0
+            self.p3_kwh_today = 0.0
+            self.mode2_time_seconds = 0.0
+            self.relay_switch_count = 0
+            self.max_cell_delta_today = 0.0
+            self.tuya_ac_turned_off_today = False
+            log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str}")
 
-        # 3. Avís de Caiguda de Tensió de Xarxa (<190V sostinguts per >2 minuts)
-        if self.vebus_mode == 3 and self.grid_v < LOW_VOLTAGE_THRESHOLD_V:
+        hours = dt / 3600.0
+        
+        if self.pv_p > 0:
+            self.solar_kwh_today += (self.pv_p / 1000.0) * hours
+            if self.pv_p > self.solar_peak_w:
+                self.solar_peak_w = self.pv_p
+                
+        if self.ac_loads > 0:
+            self.consumption_kwh_today += (self.ac_loads / 1000.0) * hours
+            
+        if self.vebus_mode == 2:
+            self.mode2_time_seconds += dt
+        else:
+            if self.grid_p > 0:
+                imp_kwh = (self.grid_p / 1000.0) * hours
+                self.grid_import_kwh_today += imp_kwh
+                
+                # Discriminació horària 2.0TD (hora de Madrid)
+                now_madrid = get_madrid_now()
+                ch = now_madrid.hour
+                if self.is_holiday_or_weekend():
+                    self.p3_kwh_today += imp_kwh
+                elif ch in (10, 11, 12, 13, 18, 19, 20, 21):
+                    self.p1_kwh_today += imp_kwh
+                elif ch in (8, 9, 14, 15, 16, 17, 22, 23):
+                    self.p2_kwh_today += imp_kwh
+                else:
+                    self.p3_kwh_today += imp_kwh
+            elif self.grid_p < -20:
+                self.grid_export_kwh_today += (abs(self.grid_p) / 1000.0) * hours
+
+        if self.cell_max > 0 and self.cell_min > 0:
+            delta_mv = (self.cell_max - self.cell_min) * 1000.0
+            if delta_mv > self.max_cell_delta_today:
+                self.max_cell_delta_today = delta_mv
+
+        cov_pct = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
+        cost_today = self.calculate_today_cost()
+
+        stats = {
+            "date": self.current_day_str,
+            "solar_kwh_today": round(self.solar_kwh_today, 2),
+            "solar_peak_w": round(self.solar_peak_w, 1),
+            "consumption_kwh_today": round(self.consumption_kwh_today, 2),
+            "grid_import_kwh_today": round(self.grid_import_kwh_today, 2),
+            "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
+            "solar_coverage_percent": round(min(100.0, cov_pct), 1),
+            "cost_total_today": cost_today,
+            "mode2_time_minutes": round(self.mode2_time_seconds / 60.0, 1),
+            "relay_switch_count": self.relay_switch_count,
+            "max_cell_delta_today": round(self.max_cell_delta_today, 1),
+            "soh_bms": round(self.soh, 0),
+            "timestamp": now
+        }
+        try:
+            with open("/tmp/caseta_daily_stats.json", "w") as f:
+                json.dump(stats, f)
+        except Exception:
+            pass
+
+    def evaluate_state_machine(self):
+        """Màquina d'estats del Guardià: Zero Regal, Escut de Sobrecàrrega, Watchdog <190V i Escut Tuya."""
+        now = time.time()
+
+        # 1. 🛡️ ESCUT DE PROTECCIÓ SAI DOMÒTIC (<65% SoC)
+        if self.soc < 65.0 and not self.tuya_ac_turned_off_today:
+            self.trigger_tuya_ac_off()
+
+        # 2. 🚨 WATCHDOG DE BAIXA TENSIÓ RURAL (<190V durant >2 minuts)
+        if self.vebus_mode != 2 and self.grid_v < 190.0:
             if self.low_voltage_start_time is None:
                 self.low_voltage_start_time = now
-            elif (now - self.low_voltage_start_time) >= LOW_VOLTAGE_ALERT_TIME_S and not self.low_voltage_alert_sent:
-                self.send_ntfy("⚠️ Caiguda de Tensió de Xarxa", f"La línia del carrer està a {self.grid_v:.1f} V (<190 V) des de fa 2 minuts.\nEl MultiPlus manté la caseta 100% protegida a 230 V.", priority="default", tags="warning,zap")
-                self.low_voltage_alert_sent = True
-        elif self.grid_v >= (LOW_VOLTAGE_THRESHOLD_V + 10.0):
+            elif now - self.low_voltage_start_time >= 120.0:
+                self.send_notification("🚨 Tensió Xarxa Crítica", f"Tensió rural a {self.grid_v:.1f}V (<190V durant >2 minuts). Vigilant estabilitat!", "high", "warning")
+                self.low_voltage_start_time = now # reinicia
+        else:
             self.low_voltage_start_time = None
-            self.low_voltage_alert_sent = False
-            
-        # 4. Protecció Química en Mode Aïllat
+
+        # 3. ⚡ RECONNEXIÓ D'EMERGÈNCIA A XARXA (Mode 2 -> Mode 3)
         if self.vebus_mode == 2:
-            if self.battery_i < -RECONNECT_MAX_DISCHARGE_A:
+            # Condició A: Descàrrega forta de bateria (>15A durant >5s)
+            if self.bat_i < -15.0:
                 if self.high_discharge_start_time is None:
                     self.high_discharge_start_time = now
-                elif (now - self.high_discharge_start_time) >= RECONNECT_MAX_DISCHARGE_TIME_S:
-                    self.set_vebus_mode(3, f"Descàrrega alta ({abs(self.battery_i):.1f}A > {RECONNECT_MAX_DISCHARGE_A}A per >5s)")
+                elif now - self.high_discharge_start_time >= 5.0:
+                    self.set_multiplus_mode(3, f"Descàrrega alta ({abs(self.bat_i):.1f}A > 15.0A per >5s)")
                     self.high_discharge_start_time = None
+                    return
             else:
                 self.high_discharge_start_time = None
-                
-            if self.soc <= RECONNECT_MIN_SOC:
-                self.set_vebus_mode(3, f"Bateria ha arribat al sòl de reserva ({self.soc:.1f}% <= {RECONNECT_MIN_SOC}%)")
 
-        # 5. Zero Regal (Aïllament a Inverter Only)
-        if self.vebus_mode == 3:
-            is_exporting = (self.grid_p <= GRID_EXPORT_THRESHOLD_W)
-            is_battery_full_enough = (self.soc > SOC_ISLANDING_THRESHOLD)
-            is_battery_resting = (self.battery_i >= -BATTERY_MAX_REST_CURRENT_A)
-            has_solar = (self.pv_p >= 400.0)
-            
-            if is_exporting and is_battery_full_enough and is_battery_resting and has_solar:
+            # Condició B: Bateria caient per sota de la reserva segura (<70% SoC)
+            if self.soc < 70.0:
+                self.set_multiplus_mode(3, f"Bateria ha baixat del sòl segur ({self.soc:.1f}% < 70.0%)")
+                return
+
+            # Condició C: Producció solar esgotada i consum actiu
+            if self.pv_p < 50.0 and self.ac_loads > 300.0 and self.soc <= 85.0:
+                self.set_multiplus_mode(3, f"Sol esgotat ({self.pv_p:.0f}W) i consum a casa ({self.ac_loads:.0f}W)")
+                return
+
+        # 4. 🏝️ DESCONNEXIÓ PER EVITAR ABOCAMENT (Mode 3 -> Mode 2)
+        elif self.vebus_mode == 3:
+            # Condició: Abocant >50W amb bateria alta (>=88% SoC) durant >30s
+            if self.grid_p is not None and self.grid_p < -50.0 and self.soc >= 88.0:
                 if self.export_start_time is None:
                     self.export_start_time = now
                     log.info(f"⚠️ Detectat abocament de {abs(self.grid_p):.0f}W amb SoC {self.soc:.1f}%. Iniciant compte enrere de 30s...")
-                elif (now - self.export_start_time) >= EXPORT_TRIGGER_TIME_S:
-                    self.set_vebus_mode(2, f"Abocament sostingut de {abs(self.grid_p):.0f}W durant >30s amb SoC {self.soc:.1f}%")
+                elif now - self.export_start_time >= 30.0:
+                    self.set_multiplus_mode(2, f"Abocament sostingut de {abs(self.grid_p):.0f}W durant >30s amb SoC {self.soc:.1f}%")
                     self.export_start_time = None
+                    return
             else:
                 self.export_start_time = None
 
     def on_mqtt_message(self, client, userdata, msg):
-        """Processa missatges MQTT de telemetria en temps real."""
-        topic = msg.topic
-        
-        # Auto-descobriment del Portal ID
-        if self.portal_id in ("c0619ab2xxxx", "+") and topic.startswith("N/"):
-            parts = topic.split("/")
+        try:
+            parts = msg.topic.split("/")
             if len(parts) > 1 and parts[1] not in ("+", "#"):
                 self.portal_id = parts[1]
-                log.info(f"🔍 Auto-descobert Portal ID: {self.portal_id}")
-
-        try:
-            payload = json.loads(msg.payload.decode())
-            val = payload.get("value")
+                
+            val = json.loads(msg.payload.decode()).get("value")
+            topic = msg.topic
+            
+            # Telemetria de Bateria
+            if topic.endswith("/battery/512/Soc"):
+                self.soc = float(val) if val is not None else self.soc
+            elif topic.endswith("/battery/512/Soh"):
+                self.soh = float(val) if val is not None else self.soh
+            elif topic.endswith("/battery/512/Dc/0/Voltage"):
+                self.bat_v = float(val) if val is not None else self.bat_v
+            elif topic.endswith("/battery/512/Dc/0/Current"):
+                self.bat_i = float(val) if val is not None else self.bat_i
+            elif topic.endswith("/battery/512/Dc/0/Power"):
+                self.bat_p = float(val) if val is not None else self.bat_p
+            elif topic.endswith("/battery/512/System/MaxCellVoltage"):
+                self.cell_max = float(val) if val is not None else self.cell_max
+            elif topic.endswith("/battery/512/System/MinCellVoltage"):
+                self.cell_min = float(val) if val is not None else self.cell_min
+                
+            # Telemetria Solar i Xarxa
+            elif topic.endswith("/pvinverter/31/Ac/Power"):
+                self.pv_p = float(val) if val is not None else self.pv_p
+            elif topic.endswith("/system/0/Ac/Consumption/L1/Power"):
+                self.ac_loads = float(val) if val is not None else self.ac_loads
+            elif topic.endswith("/system/0/Ac/Grid/L1/Power"):
+                self.grid_p = float(val) if val is not None else self.grid_p
+            elif topic.endswith("/vebus/276/Ac/ActiveIn/L1/V"):
+                self.grid_v = float(val) if val is not None else self.grid_v
+            elif topic.endswith("/vebus/276/Mode"):
+                self.vebus_mode = int(val) if val is not None else self.vebus_mode
+            elif topic.endswith("/vebus/276/VebusChargeState"):
+                self.vebus_state = int(val) if val is not None else self.vebus_state
+                
         except Exception:
-            return
-
-        if val is None:
-            return
-
-        if topic.endswith("/battery/512/Soc"):
-            self.soc = float(val)
-        elif topic.endswith("/battery/512/Soh"):
-            self.soh = float(val)
-        elif topic.endswith("/battery/512/Dc/0/Voltage"):
-            self.battery_v = float(val)
-        elif topic.endswith("/battery/512/Dc/0/Current"):
-            self.battery_i = float(val)
-        elif topic.endswith("/battery/512/Dc/0/Power"):
-            self.battery_p = float(val)
-        elif topic.endswith("/battery/512/Dc/0/Temperature"):
-            self.battery_temp = float(val)
-        elif topic.endswith("/battery/512/System/MaxCellVoltage"):
-            self.cell_max_v = float(val)
-        elif topic.endswith("/battery/512/System/MinCellVoltage"):
-            self.cell_min_v = float(val)
-        elif topic.endswith("/system/0/Ac/Grid/L1/Power"):
-            self.grid_p = float(val)
-        elif topic.endswith("/vebus/276/Ac/ActiveIn/L1/V"):
-            self.grid_v = float(val)
-        elif topic.endswith("/pvinverter/31/Ac/Power"):
-            self.pv_p = float(val)
-        elif topic.endswith("/pvinverter/31/Ac/Energy/Forward"):
-            self.pv_energy_forward = float(val)
-        elif topic.endswith("/system/0/Ac/Consumption/L1/Power"):
-            self.ac_loads = float(val)
-        elif topic.endswith("/vebus/276/Mode"):
-            self.vebus_mode = int(val)
-        elif topic.endswith("/Settings/CGwacs/BatteryLife/MinimumSocLimit"):
-            self.cerbo_min_soc = float(val)
+            pass
 
     def run(self):
-        """Inicia el dimoni guardià."""
         log.info(f"🚀 Iniciant Caseta Guardian (Cerbo IP: {CERBO_IP})...")
         
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2 if hasattr(mqtt, "CallbackAPIVersion") else None)
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_message = self.on_mqtt_message
         
         try:
-            self.client.connect(CERBO_IP, MQTT_PORT, 10)
+            self.client.connect(CERBO_IP, 1883, 60)
         except Exception as e:
-            log.error(f"No s'ha pogut connectar al broker MQTT de {CERBO_IP}: {e}")
+            log.error(f"Error fatal connectant al broker MQTT del Cerbo GX ({CERBO_IP}): {e}")
             return
             
-        topics = [
-            f"N/+/battery/512/Soc",
-            f"N/+/battery/512/Soh",
-            f"N/+/battery/512/Dc/0/Voltage",
-            f"N/+/battery/512/Dc/0/Current",
-            f"N/+/battery/512/Dc/0/Power",
-            f"N/+/battery/512/Dc/0/Temperature",
-            f"N/+/battery/512/System/MaxCellVoltage",
-            f"N/+/battery/512/System/MinCellVoltage",
-            f"N/+/system/0/Ac/Grid/L1/Power",
-            f"N/+/vebus/276/Ac/ActiveIn/L1/V",
-            f"N/+/pvinverter/31/Ac/Power",
-            f"N/+/pvinverter/31/Ac/Energy/Forward",
-            f"N/+/system/0/Ac/Consumption/L1/Power",
-            f"N/+/vebus/276/Mode",
-            f"N/+/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
-        ]
-        
-        for t in topics:
-            self.client.subscribe(t)
-            
+        self.client.subscribe("N/#")
         self.client.loop_start()
-        self.client.publish(f"R/{self.portal_id}/keepalive", "")
-        self.last_keepalive_time = time.time()
         
-        self.update_open_meteo_forecast()
+        self.sync_cerbo_min_soc()
+        self.update_energy_forecast()
+        
         log.info("🛡️ Guardià en línia i vigilant telemetria en directe!")
         
-        try:
-            while True:
-                time.sleep(2.0)
+        while self.running:
+            try:
                 now = time.time()
-                if now - self.last_keepalive_time >= KEEPALIVE_INTERVAL_S:
+                
+                # Keepalive optimitzat cada 20s
+                if now - self.last_keepalive_time >= 20:
                     self.client.publish(f"R/{self.portal_id}/keepalive", "")
                     self.last_keepalive_time = now
-                self.update_open_meteo_forecast()
-                self.evaluate_system()
-        except KeyboardInterrupt:
-            log.info("Aturant guardià...")
-        finally:
-            self.client.loop_stop()
-            self.client.disconnect()
-
+                    
+                self.sync_cerbo_min_soc()
+                self.update_energy_forecast()
+                self.update_energy_integrals()
+                self.evaluate_state_machine()
+                
+                time.sleep(1.0)
+            except KeyboardInterrupt:
+                log.info("Aturant Caseta Guardian...")
+                self.running = False
+            except Exception as e:
+                log.error(f"Error al bucle principal: {e}")
+                time.sleep(2.0)
+                
+        self.client.loop_stop()
+        self.client.disconnect()
 
 if __name__ == "__main__":
     guardian = CasetaGuardian()
