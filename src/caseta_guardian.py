@@ -374,60 +374,57 @@ class CasetaGuardian:
             log.warning(f"Error enviant comanda Tuya Cloud: {e}")
 
     def sync_cerbo_min_soc(self):
-        """Avalua periòdicament el balanç de Sol vs Consum, estat de cel·les i clima per modular el Minimum SOC."""
+        """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
         if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
             return
         
         now = time.time()
-        # Avaluem cada 30 segons per respondre àgilment als canvis de núvols o encesa d'aparells
-        if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:  # Interval suau de 2 minuts
+        # Interval suau de 2 minuts (120 segons) per evitar oscil·lacions
+        if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:
             return
         self.last_soc_eval_time = now
 
         now_madrid = get_madrid_now()
         current_hour = now_madrid.hour
+        current_minute = now_madrid.minute
+        time_decimal = current_hour + (current_minute / 60.0)
         is_weekend_or_hol = self.is_holiday_or_weekend()
         
-        # 1. 🌙 Nit Supervall (00:00h a 06:59h Madrid): Top-Balancing i 100% de SAI a 7 cts/kWh
-        if 0 <= current_hour < 7:
+        # 1. 🚨 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
+        if self.blackout_risk >= 60:
+            target = 95.0
+            phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
+
+        # 2. 🌙 Nit Supervall (00:00h a 06:59h Madrid): Top-Balancing i 100% de SAI a 7 cts/kWh
+        elif time_decimal < 7.0:
             target = 100.0
             phase_name = "🌙 Nit Supervall (100% Top-Balancing & SAI Màxim a 7 cts)"
-            
-        # 2. ☀️ Franja Diürna (07:00h a 15:59h Madrid) - Avaluació Dinàmica Sol vs Consum:
-        elif 7 <= current_hour < 16:
-            if self.blackout_risk >= 60:
-                target = 95.0
-                phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
-            # A) Sol Radiant Actiu (Huawei > 300W o Sol supera el Consum): Baixem a 70% per engolir l'excedent
-            elif self.pv_p >= 350.0 or (self.pv_p >= 200.0 and self.pv_p >= self.ac_loads):
-                target = 70.0
-                phase_name = f"☀️ Sol Actiu Radiant ({self.pv_p:.0f}W > {self.ac_loads:.0f}W consum -> 70% per absorbir)"
-            # B) Dia Molt Núvol / Fosc / Pluja (Huawei < 200W): Mantenim 85% per no drenar la bateria
-            elif self.pv_p < 200.0 and self.today_kwh_est < 3.5:
-                target = 85.0
-                phase_name = f"☁️ Dia Molt Núvol ({self.pv_p:.0f}W -> 85% Escut SAI Protegit)"
-            # C) Matí Despertant / Variable: Sòl moderat de seguretat
-            else:
-                if self.pv_p > 250.0:
-                    target = 70.0
-                    phase_name = f"⛅ Sol Creixent ({self.pv_p:.0f}W -> 70% Espai Obert)"
-                else:
-                    target = 85.0
-                    phase_name = f"🌥️ Baixa Producció ({self.pv_p:.0f}W -> 85% Coixí SAI)"
 
-        # 3. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
-        elif is_weekend_or_hol and (current_hour >= 18 or (current_hour >= 16 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
-            target = 100.0
-            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat - Vall 24h a 7 cts)"
-            
-        # 4. 🌇 Tarda / Vespre Feiners (16:00h a 23:59h Madrid):
-        else:
-            if self.blackout_risk >= 60:
-                target = 95.0
-                phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
+        # 3. ☕ Matí Primer Cafè / Transició (07:00h a 09:29h Madrid)
+        elif 7.0 <= time_decimal < 9.5:
+            target = 85.0
+            phase_name = f"☕ Matí Transició (85% Coixí Inicial - Sol: {self.pv_p:.0f}W)"
+
+        # 4. ☀️ Finestra Solar Central d'Estiu (09:30h a 16:29h Madrid):
+        elif 9.5 <= time_decimal < 16.5:
+            # Si el sol és radiant o supera la casa amb escreix: baixem al 70%
+            if self.pv_p >= 450.0 or (self.pv_p >= 300.0 and self.pv_p >= self.ac_loads):
+                target = 70.0
+                phase_name = f"☀️ Sol Radiant Actiu ({self.pv_p:.0f}W > {self.ac_loads:.0f}W -> 70% Absorció Màxima)"
+            # Per defecte al migdia: sòl equilibrat del 75% (obre 800 Wh de buit i manté 10h de SAI)
             else:
-                target = 85.0
-                phase_name = "🌇 Tarda / Vespre Resilient (85% Màxima Seguretat & SAI)"
+                target = 75.0
+                phase_name = f"🌤️ Finestra Solar Central ({self.pv_p:.0f}W -> 75% Coixí Solar & 10h SAI)"
+
+        # 5. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
+        elif is_weekend_or_hol and (time_decimal >= 18.0 or (time_decimal >= 16.5 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
+            target = 100.0
+            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat a 7 cts)"
+
+        # 6. 🌇 Tarda / Vespre Feiners (16:30h a 23:59h Madrid):
+        else:
+            target = 85.0
+            phase_name = "🌇 Tarda / Vespre Resilient (85% Màxima Seguretat & SAI)"
 
         self.target_reserve_soc = target
 
