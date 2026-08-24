@@ -91,13 +91,18 @@ def get_telemetry():
     mqtt_forecast = [None]
 
     def on_connect(client, userdata, flags, rc, properties=None):
-        client.subscribe("#")
-        client.publish(f"R/{found_portal[0]}/keepalive", "")
+        # Subscripció ultra-ràpida i focalitzada en lloc de demanar tot el broker ('#')
+        client.subscribe("N/+/battery/512/#")
+        client.subscribe("N/+/pvinverter/#")
+        client.subscribe("N/+/system/0/#")
+        client.subscribe("N/+/vebus/276/#")
+        client.subscribe("caseta/#")
+        client.publish("R/48e7da8782fd/keepalive", "")
 
     def on_message(client, userdata, msg):
         try:
             parts = msg.topic.split("/")
-            if len(parts) > 1 and parts[1] not in ("+", "#"):
+            if len(parts) > 1 and parts[1] not in ("+", "#", "caseta"):
                 found_portal[0] = parts[1]
             val = json.loads(msg.payload.decode()).get("value")
             data[msg.topic] = val
@@ -113,17 +118,23 @@ def get_telemetry():
     client.on_message = on_message
     
     try:
-        client.connect(CERBO_IP, 1883, 3)
+        client.connect(CERBO_IP, 1883, 2)
     except Exception as e:
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
         return {}, None, None, None
 
     client.loop_start()
-    for _ in range(20):
-        if f"N/{found_portal[0]}/battery/512/Soc" in data and f"N/{found_portal[0]}/vebus/276/Mode" in data and f"N/{found_portal[0]}/system/0/Ac/Consumption/L1/Power" in data:
+    # Polling ultra-ràpid de 20ms: ix immediatament quan arriben les claus essencials (habitualment en <100ms)
+    for _ in range(35):
+        portal = found_portal[0]
+        if (
+            f"N/{portal}/battery/512/Soc" in data
+            and f"N/{portal}/system/0/Ac/Consumption/L1/Power" in data
+            and f"N/{portal}/vebus/276/Mode" in data
+        ):
             break
-        client.publish(f"R/{found_portal[0]}/keepalive", "")
-        time.sleep(0.1)
+        time.sleep(0.02)
+        
     client.loop_stop()
     client.disconnect()
     return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0]
