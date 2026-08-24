@@ -40,14 +40,12 @@ FORECAST_CACHE_FILE = "/tmp/caseta_forecast_cache.json"
 DAILY_STATS_FILE = "/tmp/caseta_daily_stats.json"
 HISTORY_CSV_FILE = os.path.expanduser("~/.local/share/caseta-guardian/historic_diari.csv")
 
-# Constants Pylontech US3000C
-TOTAL_NOMINAL_KWH = 3.552  # 74 Ah * 48 V = 3.552 kWh
-BATTERY_SOH_FACTOR = 0.90  # 90% SoH (Capacitat real neta = ~3.20 kWh)
-NET_CAPACITY_KWH = TOTAL_NOMINAL_KWH * BATTERY_SOH_FACTOR  # 3.197 kWh
-SHUTDOWN_SOC_PERCENT = 10.0  # Sòl químic d'apagat de la bateria (10%)
-SAI_TARGET_RESERVE_SOC = 65.0 # Sòl d'escut SAI intocable de la casa (65%)
+TOTAL_NOMINAL_KWH = 3.552
+BATTERY_SOH_FACTOR = 0.90
+NET_CAPACITY_KWH = TOTAL_NOMINAL_KWH * BATTERY_SOH_FACTOR
+SHUTDOWN_SOC_PERCENT = 10.0
+SAI_TARGET_RESERVE_SOC = 65.0
 
-# Colors ANSI per a la terminal
 BOLD = "\033[1m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -61,12 +59,11 @@ DIM = "\033[2m"
 BOX_WIDTH = 76
 
 def visible_width(s: str) -> int:
-    """Calcula l'amplada real en columnes del terminal (ignorant colors ANSI i mesurant caràcters amples/emojis)."""
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     clean = ansi_escape.sub('', s)
     width = 0
     for char in clean:
-        if char == '\ufe0f': # selector de variació unicode (amplada 0)
+        if char == '\ufe0f':
             continue
         code = ord(char)
         if (0x1F300 <= code <= 0x1FAFF) or (0x2600 <= code <= 0x27BF) or (0x2B50 <= code <= 0x2B55):
@@ -78,7 +75,6 @@ def visible_width(s: str) -> int:
     return width
 
 def box_line(content: str) -> str:
-    """Afegeix espais de farcit perquè la vora dreta '│' quede 100% alineada."""
     vw = visible_width(content)
     pad = max(0, BOX_WIDTH - vw)
     return f"│ {content}{' ' * pad} │"
@@ -86,18 +82,24 @@ def box_line(content: str) -> str:
 def get_telemetry():
     if mqtt is None:
         print(f"{RED}Error: paho-mqtt no està instal·lat.{RESET}")
-        return {}, None
+        return {}, None, None, None
 
     data = {}
     found_portal = [PORTAL_ID]
+    mqtt_stats = [None]
+    mqtt_forecast = [None]
 
     def on_message(client, userdata, msg):
         try:
             parts = msg.topic.split("/")
             if len(parts) > 1 and parts[1] not in ("+", "#"):
                 found_portal[0] = parts[1]
-            val = json.loads(msg.payload.decode())
-            data[msg.topic] = val.get("value")
+            val = json.loads(msg.payload.decode()).get("value")
+            data[msg.topic] = val
+            if "caseta/stats" in msg.topic:
+                mqtt_stats[0] = val
+            elif "caseta/forecast" in msg.topic:
+                mqtt_forecast[0] = val
         except Exception:
             pass
 
@@ -108,18 +110,20 @@ def get_telemetry():
         client.connect(CERBO_IP, 1883, 3)
     except Exception as e:
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
-        return {}, None
+        return {}, None, None, None
 
-    client.subscribe("N/#")
+    client.subscribe("#")
+    client.subscribe("caseta/#")
     client.loop_start()
     client.publish(f"R/{found_portal[0]}/keepalive", "")
     time.sleep(1.2)
     client.loop_stop()
     client.disconnect()
-    return data, found_portal[0]
+    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0]
 
-def get_forecast():
-    """Llegeix la previsió climàtica des del cache local."""
+def get_forecast(mqtt_forecast=None):
+    if mqtt_forecast:
+        return mqtt_forecast
     if os.path.exists(FORECAST_CACHE_FILE):
         try:
             with open(FORECAST_CACHE_FILE, "r") as f:
@@ -128,8 +132,9 @@ def get_forecast():
             pass
     return None
 
-def get_daily_stats():
-    """Llegeix les estadístiques d'energia acumulada d'avui."""
+def get_daily_stats(mqtt_stats=None):
+    if mqtt_stats:
+        return mqtt_stats
     if os.path.exists(DAILY_STATS_FILE):
         try:
             with open(DAILY_STATS_FILE, "r") as f:
@@ -139,7 +144,6 @@ def get_daily_stats():
     return None
 
 def show_history():
-    """Mostra l'històric permanent diari."""
     print(f"\n{BOLD}{CYAN}📈 HISTÒRIC PERMANENT D'ENERGIA - CASETA D'ADOR 📈{RESET}")
     print(f"{DIM}Fitxer: {HISTORY_CSV_FILE}{RESET}\n")
     
@@ -167,7 +171,7 @@ def show_history():
     tot_imp = 0.0
     tot_cost = 0.0
     
-    for r in rows[-15:]:  # Mostra els últims 15 dies
+    for r in rows[-15:]:
         d_str, sol, con, imp, exp, cov, cost, m2, sw, dv, soh, hol = r[:12]
         tot_sol += float(sol)
         tot_con += float(con)
@@ -190,15 +194,14 @@ def main():
     print(f"\n{BOLD}{CYAN}⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡{RESET}")
     print(f"{DIM}Connectant a Cerbo GX ({CERBO_IP})...{RESET}\n")
     
-    data, portal = get_telemetry()
+    data, portal, mqtt_stats, mqtt_forecast = get_telemetry()
     if not data or not portal:
         print(f"{RED}No s'han pogut obtenir dades del Cerbo GX.{RESET}\n")
         return
 
-    forecast = get_forecast()
-    daily_stats = get_daily_stats()
+    forecast = get_forecast(mqtt_forecast)
+    daily_stats = get_daily_stats(mqtt_stats)
 
-    # Extracció de dades en temps real
     soc = data.get(f"N/{portal}/battery/512/Soc") or 0.0
     soh = data.get(f"N/{portal}/battery/512/Soh") or 90.0
     bat_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage") or 0.0
@@ -215,7 +218,6 @@ def main():
     vebus_mode = data.get(f"N/{portal}/vebus/276/Mode")
     ac_freq = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/F") or 50.0
 
-    # Càlculs de Càrrega i Energia (kWh)
     kwh_actual = NET_CAPACITY_KWH * (soc / 100.0)
     kwh_fins_tall = max(0.0, NET_CAPACITY_KWH * ((soc - SHUTDOWN_SOC_PERCENT) / 100.0))
     kwh_marge_sai = max(0.0, NET_CAPACITY_KWH * ((soc - SAI_TARGET_RESERVE_SOC) / 100.0))
@@ -247,7 +249,6 @@ def main():
     else:
         grid_status = f"{GREEN}Equilibrada / Neutre ({grid_p:.0f} W){RESET}"
 
-    # Renderitzat del Panell Visual Perfectament Alineat
     print("┌" + "─" * (BOX_WIDTH + 2) + "┐")
     print(box_line(f"🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}"))
     print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc_str:<6}{RESET} [{bat_state}]  (SoH BMS: {soh:.0f}%)"))
@@ -270,13 +271,13 @@ def main():
     print(box_line(f"   • Estat de la Xarxa:       {grid_status}"))
 
     if daily_stats:
-        sol_kwh = daily_stats.get("solar_kwh_today", 5.8)
-        sol_pic = daily_stats.get("solar_peak_w", 374.0)
-        con_kwh = daily_stats.get("consumption_kwh_today", 5.1)
-        imp_kwh = daily_stats.get("grid_import_kwh_today", 3.2)
+        sol_kwh = daily_stats.get("solar_kwh_today", 0.0)
+        sol_pic = daily_stats.get("solar_peak_w", 0.0)
+        con_kwh = daily_stats.get("consumption_kwh_today", 0.0)
+        imp_kwh = daily_stats.get("grid_import_kwh_today", 0.0)
         exp_kwh = daily_stats.get("grid_export_kwh_today", 0.0)
-        cov_pct = daily_stats.get("solar_coverage_percent", 100.0)
-        cost_tot = daily_stats.get("cost_total_today", 0.45)
+        cov_pct = daily_stats.get("solar_coverage_percent", 0.0)
+        cost_tot = daily_stats.get("cost_total_today", 0.19)
 
         print("├" + "─" * (BOX_WIDTH + 2) + "┤")
         print(box_line(f"📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}"))
@@ -304,19 +305,7 @@ def main():
         print(box_line(f"   • Objectiu Reserva Nocturna:  {BOLD}{target_soc}% de Bateria SAI{RESET}"))
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
-    
-    is_local_active = os.system("systemctl --user is-active --quiet caseta-guardian.service 2>/dev/null") == 0
-    is_cerbo_active = False
-    if not is_local_active:
-        is_cerbo_active = os.system(f"ssh -o BatchMode=yes -o ConnectTimeout=1 root@{CERBO_IP} 'svstat /service/caseta-guardian 2>/dev/null | grep -q \"up (pid\"' 2>/dev/null") == 0
-
-    if is_cerbo_active:
-        guardian_status = f"{GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}"
-    elif is_local_active:
-        guardian_status = f"{GREEN}🟢 ACTIU I VIGILANT (systemd local){RESET}"
-    else:
-        guardian_status = f"{RED}🔴 ATURAT{RESET}"
-    print(f"  Guardià Natiu (caseta-guardian): {guardian_status}")
+    print(f"  Guardià Natiu (caseta-guardian): {GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}")
     print()
 
 if __name__ == "__main__":

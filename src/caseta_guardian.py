@@ -162,6 +162,30 @@ class CasetaGuardian:
         
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
+        self.load_daily_stats()
+
+    def load_daily_stats(self):
+        """Carrega els acumulats del dia d'avui si el dimoni es reinicia per evitar reiniciar a 0 kWh."""
+        stats_file = "/data/caseta-guardian/caseta_daily_stats.json" if os.path.exists("/data/caseta-guardian") else "/tmp/caseta_daily_stats.json"
+        if os.path.exists(stats_file):
+            try:
+                with open(stats_file, "r") as f:
+                    data = json.load(f)
+                if data.get("date") == self.current_day_str:
+                    self.solar_kwh_today = float(data.get("solar_kwh_today", 0.0))
+                    self.solar_peak_w = float(data.get("solar_peak_w", 0.0))
+                    self.consumption_kwh_today = float(data.get("consumption_kwh_today", 0.0))
+                    self.grid_import_kwh_today = float(data.get("grid_import_kwh_today", 0.0))
+                    self.grid_export_kwh_today = float(data.get("grid_export_kwh_today", 0.0))
+                    self.mode2_time_seconds = float(data.get("mode2_time_minutes", 0.0)) * 60.0
+                    self.relay_switch_count = int(data.get("relay_switch_count", 0))
+                    self.max_cell_delta_today = float(data.get("max_cell_delta_today", 0.0))
+                    self.p1_kwh_today = float(data.get("p1_kwh_today", 0.0))
+                    self.p2_kwh_today = float(data.get("p2_kwh_today", 0.0))
+                    self.p3_kwh_today = float(data.get("p3_kwh_today", 0.0))
+                    log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum.")
+            except Exception as e:
+                log.warning(f"No s'han pogut carregar acumulats previs: {e}")
 
     def init_history_csv(self):
         if not os.path.exists(HISTORY_CSV_FILE):
@@ -207,7 +231,8 @@ class CasetaGuardian:
             url = f"https://ntfy.sh/{NTFY_TOPIC}"
             data = message.encode("utf-8")
             req = urllib.request.Request(url, data=data, method="POST")
-            req.add_header("Title", title)
+            clean_title = title.encode('ascii', 'ignore').decode('ascii').strip() or "Caseta Guardian"
+            req.add_header("Title", clean_title)
             req.add_header("Priority", priority)
             req.add_header("Tags", tags)
             with urllib.request.urlopen(req, timeout=5) as resp:
@@ -513,6 +538,9 @@ class CasetaGuardian:
             "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
             "solar_coverage_percent": round(min(100.0, cov_pct), 1),
             "cost_total_today": cost_today,
+            "p1_kwh_today": round(self.p1_kwh_today, 3),
+            "p2_kwh_today": round(self.p2_kwh_today, 3),
+            "p3_kwh_today": round(self.p3_kwh_today, 3),
             "mode2_time_minutes": round(self.mode2_time_seconds / 60.0, 1),
             "relay_switch_count": self.relay_switch_count,
             "max_cell_delta_today": round(self.max_cell_delta_today, 1),
@@ -522,13 +550,20 @@ class CasetaGuardian:
         try:
             with open("/tmp/caseta_daily_stats.json", "w") as f:
                 json.dump(stats, f)
+            persistent_file = "/data/caseta-guardian/caseta_daily_stats.json" if os.path.exists("/data/caseta-guardian") else None
+            if persistent_file:
+                with open(persistent_file, "w") as f:
+                    json.dump(stats, f)
+            if self.client:
+                self.client.publish(f"N/{self.portal_id}/caseta/stats", json.dumps({"value": stats}), retain=True)
+            self.client.publish("caseta/stats", json.dumps({"value": stats}), retain=True)
         except Exception:
             pass
 
     def evaluate_state_machine(self):
         now = time.time()
 
-        if self.soc < 65.0 and not self.tuya_ac_turned_off_today:
+        if 0 < self.soc < 65.0 and not self.tuya_ac_turned_off_today:
             self.trigger_tuya_ac_off()
 
         if self.vebus_mode != 2 and self.grid_v < 190.0:
