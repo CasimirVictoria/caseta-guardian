@@ -334,40 +334,64 @@ class CasetaGuardian:
         if self.tuya_ac_turned_off_today:
             return
             
-        log.info("❄️ [ESCUT CLIMÀTIC] Apagant Aire Condicionat per infrarojos Tuya...")
+        log.info("❄️ [ESCUT CLIMÀTIC] Apagant Aire Condicionat per infrarojos Tuya Cloud...")
         self.tuya_ac_turned_off_today = True
         
         try:
-            import tinytuya
-            dev_id = config.get("tuya_s06_id", "bf5377f0d014d59a72kexi")
-            loc_key = config.get("tuya_s06_key", "7e813a8b417e29cf")
-            ir = tinytuya.OutletDevice(dev_id, TUYA_S06_IP, loc_key, version=3.3)
-            ir.set_status(False, 1)
-            log.info("❄️ Comanda Tuya Local transmesa amb èxit!")
-            self.send_notification("❄️ Escut Domòtic Activat", "S'ha apagat l'aire condicionat automàticament per protegir la reserva del 65% de la bateria!", "high", "snowflake")
-            return
-        except Exception as e:
-            log.warning(f"Comanda Tuya Local no disponible ({e}). Provant Tuya Cloud...")
-
-        try:
-            cid = config.get("tuya_cloud_client_id", "v9mkg98345ektd4p4m7u")
-            sec = config.get("tuya_cloud_secret", "d1326442650c45169a9b8979ceb649ee")
-            dev_id = config.get("tuya_s06_id", "bf5377f0d014d59a72kexi")
-            
-            t_ms = str(int(time.time() * 1000))
+            cid = config.get("tuya_cloud_client_id", "YOUR_TUYA_CLIENT_ID")
+            sec = config.get("tuya_cloud_secret", "YOUR_TUYA_SECRET")
+            infrared_id = config.get("tuya_s06_id", "YOUR_INFRARED_GATEWAY_ID")
+            remote_id = config.get("tuya_ac_remote_id", "YOUR_AC_REMOTE_ID")
             base_url = "https://openapi.tuyaeu.com"
-            path = f"/v1.0/devices/{dev_id}/commands"
-            body = json.dumps({"commands": [{"code": "power", "value": False}]})
             
-            str_to_sign = f"{cid}{t_ms}POST\n{hashlib.sha256(body.encode()).hexdigest()}\n\n{path}"
-            sign = hmac.new(sec.encode(), str_to_sign.encode(), hashlib.sha256).hexdigest().upper()
+            # 1. Obtenir Token Tuya
+            t_ms = str(int(time.time() * 1000))
+            url_path_token = "/v1.0/token?grant_type=1"
+            content_hash = hashlib.sha256(b"").hexdigest()
+            str_to_sign = f"GET\n{content_hash}\n\n{url_path_token}"
+            sign_str = f"{cid}{t_ms}{str_to_sign}"
+            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
             
-            h = {"client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"}
-            r = urllib.request.Request(f"{base_url}{path}", data=body.encode(), headers=h, method="POST")
-            with urllib.request.urlopen(r, timeout=5) as rep:
-                result_data = json.loads(rep.read().decode())
-                if result_data.get("success"):
-                    log.info("❄️ Comanda Tuya Cloud 'power=0' (Apagat AC) transmesa amb èxit!")
+            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
+                "client_id": cid,
+                "sign": sign,
+                "t": t_ms,
+                "sign_method": "HMAC-SHA256",
+                "Content-Type": "application/json"
+            })
+            
+            with urllib.request.urlopen(req_token, timeout=8) as rep_tok:
+                tok_data = json.loads(rep_tok.read().decode())
+                token = tok_data.get("result", {}).get("access_token")
+                
+            if not token:
+                log.warning(f"No s'ha pogut obtenir token Tuya: {tok_data}")
+                return
+                
+            # 2. Enviar ordre Power OFF per a l'Aire Condicionat
+            t_ms = str(int(time.time() * 1000))
+            url_path_cmd = f"/v2.0/infrareds/{infrared_id}/air-conditioners/{remote_id}/command"
+            body_dict = {"code": "power", "value": 0}
+            body_str = json.dumps(body_dict)
+            content_hash = hashlib.sha256(body_str.encode()).hexdigest()
+            str_to_sign = f"POST\n{content_hash}\n\n{url_path_cmd}"
+            sign_str = f"{cid}{token}{t_ms}{str_to_sign}"
+            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+            
+            req_cmd = urllib.request.Request(f"{base_url}{url_path_cmd}", data=body_str.encode(), headers={
+                "client_id": cid,
+                "access_token": token,
+                "sign": sign,
+                "t": t_ms,
+                "sign_method": "HMAC-SHA256",
+                "Content-Type": "application/json"
+            }, method="POST")
+            
+            with urllib.request.urlopen(req_cmd, timeout=8) as rep_cmd:
+                result_data = json.loads(rep_cmd.read().decode())
+                if result_data.get("result") is True or result_data.get("success") is True:
+                    log.info("❄️ Comanda Tuya Cloud 'power=0' (Apagat AC) transmesa amb èxit al S06!")
+                    self.send_notification("❄️ Escut Domòtic Activat", "S'ha apagat l'aire condicionat automàticament per protegir la reserva del 65% de la bateria!", "high", "snowflake")
                 else:
                     log.warning(f"Resposta Tuya Cloud: {result_data}")
         except Exception as e:
