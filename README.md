@@ -14,19 +14,19 @@ The project is designed with maximum modularity and is currently running **in pr
   ┌──────────────────────────────────────────────────────────────────────────┐
   │                    🎛️ CERBO GX (VENUS OS IN PRODUCTION)                  │
   │                                                                          │
-  │  • caseta_guardian.py (Native daemontools service at /data/caseta-guard) │
+  │  • caseta_guardian.py (Native daemontools service at /data/caseta-guardian) │
   │  • Internal MQTT connection to 127.0.0.1 (FlashMQ / <0.1 ms latency)     │
   │  • Predictive solar forecast engine (Open-Meteo API)                     │
   │  • Ntfy push notifications & Tuya Cloud OpenAPI for AC climate control   │
   │  • Guaranteed persistence in /data/ (survives Victron firmware updates)  │
-  │  • Tiny footprint: ~39 MB RAM | 0.0% CPU | Cool CPU temperature          │
+  │  • Tiny footprint: ~19 MB RAM (<2% RAM) | 0.0% CPU | Cool CPU temp       │
   └──────────────────────────────────────────────────────────────────────────┘
                                       ▲
                                       │ MQTT / LAN / SSH
                                       ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
   │                 💻 LINUX HOST / CLI CLIENT (caseta)                      │
-  │  • Real-time CLI telemetry dashboard and instant diagnostics             │
+  │  • Real-time CLI telemetry dashboard and instant diagnostics (<0.4s)     │
   └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,7 +41,7 @@ The project is designed with maximum modularity and is currently running **in pr
    - Embedded in `/data/rc.local` to survive all official Victron firmware upgrades.
 
 3. 🪶 **Negligible Footprint:**
-   - Consumes only **~39 MB of RAM** (<4% of total RAM) and **0.0% CPU**, leaving over 700 MB of free RAM.
+   - Consumes only **~19 MB of RAM** (<2% of total RAM) and **0.0% CPU**, leaving over 700 MB of free RAM.
 
 ---
 

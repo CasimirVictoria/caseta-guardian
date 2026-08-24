@@ -19,14 +19,14 @@ El projecte està dissenyat amb màxima modularitat i actualment s'executa **en 
   │  • Model meteorològic solar Open-Meteo API                               │
   │  • Avisos push mòbil Ntfy i control Tuya Cloud per a l'aire condicionat │
   │  • Persistència garantida a /data/ (sobreviu a actualitzacions firmware) │
-  │  • Consum irrisori: ~39 MB RAM | 0.0% CPU | Temperatura CPU freda        │
+  │  • Consum irrisori: ~19 MB RAM (<2% RAM) | 0.0% CPU | Temp. CPU freda   │
   └──────────────────────────────────────────────────────────────────────────┘
                                       ▲
                                       │ MQTT / LAN / SSH
                                       ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
   │                 💻 PORTÀTIL / CLIENT CLI (caseta)                        │
-  │  • Tauler de telemetria en directe i diagnosi instantània en consola     │
+  │  • Tauler de telemetria en directe i diagnosi instantània (<0.4s)        │
   └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,7 +41,7 @@ El projecte està dissenyat amb màxima modularitat i actualment s'executa **en 
    - Inserit a `/data/rc.local` per a sobreviure a qualsevol reinici o actualització de firmware oficial de Victron.
 
 3. 🪶 **Consum Mínim i Zero Sobrecàrrega:**
-   - Ocupa només **~39 MB de RAM** (menys del 4% de la memòria del Cerbo) i **0% de CPU**, deixant més de 700 MB de RAM lliures.
+   - Ocupa només **~19 MB de RAM** (menys del 2% de la memòria del Cerbo) i **0% de CPU**, deixant més de 670 MB de RAM lliures.
 
 ---
 
