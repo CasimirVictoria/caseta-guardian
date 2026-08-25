@@ -186,13 +186,18 @@ Connectant a Cerbo GX (192.168.1.106)...
 
 ---
 
-## 🚀 Instal·lació i Desplegament
-```bash
-git clone git@github.com:CasimirVictoria/caseta-guardian.git
-cd caseta-guardian
-cp config.example.json config.json
-./install.sh
-```
+## 🗺️ Full de Ruta i Desenvolupaments Futurs: Autoregulació Climàtica Multihabitació
+
+Implementar l'autoregulació intel·ligent de la temperatura a les diferents estances de la casa (saló, habitacions, etc.) en funció dels excedents solars és arquitectònicament molt senzill i està previst en el full de ruta del projecte:
+
+1. **Integració Tuya Cloud OpenAPI / Local IR:** Ja implementada i validada amb èxit en producció per a l'aire condicionat del saló ([`temperatura_salo`](file:///home/casimir/temperatura_salo.sh) i protecció per bateria $<65\%$).
+2. **Control 100% Autònom i Resilient per Zigbee:**
+   - El maquinari físic ja està disponible i llest per al seu desplegament: Coordinador USB Zigbee (`Sonoff Zigbee 3.0 Plus`), emissors d'infrarojos Zigbee i sensors de precisió de temperatura i humitat Zigbee per a cada habitació.
+   - La integració de `zigbee2mqtt` en un equip amfitrió local permetrà publicar les lectures de temperatura de cada estança i enviar comandes IR directament al broker MQTT del Cerbo GX, amb $100\%$ d'autonomia local i zero dependència d'Internet o del núvol.
+3. **Modulació de Climatització per Excedent Solar:**
+   - Ajust dinàmic de consigna: pre-refredament automàtic d'habitacions en moments de màxim pic solar i suavització de consums quan convinga blindar la reserva de la bateria.
+
+*Aquesta ampliació s'implementarà en futures versions tan bon punt disposem de temps per al muntatge i configuració física dels sensors.*
 
 ---
 

@@ -194,14 +194,18 @@ Example `config.json`:
 
 ---
 
-## 🚀 Installation & Deployment
+## 🗺️ Future Roadmap: Autonomous Multi-Room Climate Control
 
-```bash
-git clone git@github.com:CasimirVictoria/caseta-guardian.git
-cd caseta-guardian
-cp config.example.json config.json
-./install.sh
-```
+Integrating dynamic temperature auto-regulation across rooms (living room, bedrooms, etc.) with solar surplus is architecturally straightforward:
+
+1. **Tuya Cloud OpenAPI & Local Tuya IR:** Already proven and validated in production for the living room AC (`temperatura_salo` and Guardian load shedding).
+2. **100% Offline & Resilient Zigbee Subsystem:**
+   - The hardware is already acquired and ready for deployment: USB Zigbee Coordinator (`Sonoff Zigbee 3.0 Plus`), Zigbee IR Blasters, and Zigbee Temperature/Humidity precision sensors for every room.
+   - Deploying `zigbee2mqtt` on a dedicated local host will bridge room telemetry directly into the Cerbo GX MQTT broker without any internet or cloud dependency.
+3. **Smart Surplus HVAC Modulation:**
+   - Dynamic setpoint adjustment: lowering AC setpoints to pre-cool bedrooms when solar generation exceeds household loads, and dialing back when battery or grid thresholds demand resilience.
+
+*Implementation is scheduled on the project roadmap for upcoming iterations as soon as setup time permits.*
 
 ---
 
