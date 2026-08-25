@@ -211,18 +211,54 @@ Example `config.json`:
 
 ---
 
-## 🗺️ Future Roadmap: Autonomous Multi-Room Climate Control
+---
 
-Integrating dynamic temperature auto-regulation across rooms (living room, bedrooms, etc.) with solar surplus is architecturally straightforward:
+## 📡 Pure-Python Zigbee Subsystem & Zero-Disk-Wear Bioclimatic Tracking
 
-1. **Tuya Cloud OpenAPI & Local Tuya IR:** Already proven and validated in production for the living room AC (`temperatura_salo` and Guardian load shedding).
-2. **100% Offline & Resilient Zigbee Subsystem:**
-   - The hardware is already acquired and ready for deployment: USB Zigbee Coordinator (`Sonoff Zigbee 3.0 Plus`), Zigbee IR Blasters, and Zigbee Temperature/Humidity precision sensors for every room.
-   - Deploying `zigbee2mqtt` on a dedicated local host will bridge room telemetry directly into the Cerbo GX MQTT broker without any internet or cloud dependency.
-3. **Smart Surplus HVAC Modulation:**
-   - Dynamic setpoint adjustment: lowering AC setpoints to pre-cool bedrooms when solar generation exceeds household loads, and dialing back when battery or grid thresholds demand resilience.
+The installation features an embedded, fully autonomous **Zigbee 3.0 Coordinator Subsystem** running directly on the Cerbo GX:
 
-*Implementation is scheduled on the project roadmap for upcoming iterations as soon as setup time permits.*
+```
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                   📡 PURE-PYTHON ZIGBEE 3.0 SUB-ENGINE                   │
+  │                                                                          │
+  │  • Coordinator: TI CC2652P (ZG-808Z) on Cerbo GX USB port (/dev/ttyUSB0)│
+  │  • Driver: 100% Pure Python 3 (zigpy + zigpy-znp / ControllerApplication)│
+  │  • Udev unlock: /etc/udev/rules.d/zz-zigbee-ignore.rules                 │
+  │  • Active DB: 100% in RAM (tmpfs at /run/caseta-zigbee/zigbee.db)        │
+  │  • Live Telemetry: Published to FlashMQ at topic 'caseta/clima'          │
+  │  • Daily History: 1 single JSON line/day at 23:59h (~200 B/day)          │
+  │  • Zero Disk Wear: 0 Bytes/s written to industrial eMMC during runtime   │
+  └──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 🔧 How We Solved the Venus OS USB Serial Port Hijacking:
+By default, Venus OS runs `serial-starter`, which probes all serial devices on `/dev/ttyUSB*` and attempts to claim them for Victron D-Bus services (`dbus-cgwacs`, `vedirect`, etc.). 
+
+To permanently free the Zigbee coordinator without interfering with Victron services, we deployed an override udev rule at `/etc/udev/rules.d/zz-zigbee-ignore.rules`:
+```udev
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ENV{VE_SERVICE}:=""
+```
+Using the final assignment operator (`:=`), Venus OS completely ignores the coordinator serial port, leaving `/dev/ttyUSB0` exclusively available for Python `zigpy`.
+
+### 🛡️ Zero Disk Wear Architecture:
+1. **Volatile RAM Storage:** The working network database and attribute cache operate strictly in memory at `/run/caseta-zigbee/zigbee.db`.
+2. **Flash Topology Backup:** A flash backup is written to `/data/caseta-guardian/zigbee_backup.db` **only when a new device pairs**, preserving the flash chip.
+3. **Daily Thermal Inertia Rollup:** At **23:59h**, the daemon writes a single compact JSON summary record to `/data/caseta-guardian/history/historic_clima.jsonl` recording:
+   - $T_{\text{max}}$ and $T_{\text{min}}$ with exact timestamps ($t_{\text{max}}$, $t_{\text{min}}$).
+   - Daily average temperature ($T_{\text{avg}}$).
+   - Humidity and Lux maximums.
+
+### 📊 Active Connected Sensors:
+* 👶 **Sensor 1 (Habitació xiquets):** Tuya TS0201 Precision Thermohygrometer ($28.60\text{ ºC}$ / $40.0\%$).
+* 🛋️ **Sensor 2 (Saló):** HOBEIAN ZG-204ZV 4-in-1 Multisensor ($28.60\text{ ºC}$ / $43.4\%$ / $0\text{ Lux}$ / PIR Radar Occupancy).
+
+---
+
+## 🗺️ Autonomous Multi-Room Climate Control Roadmap
+
+1. **Tuya Cloud OpenAPI & Local Tuya IR:** Fully operational for living room AC management.
+2. **Offline Zigbee Coordination:** Native Zigbee daemon broadcasting indoor climate telemetry on local MQTT.
+3. **Smart Surplus HVAC Modulation:** Dynamic AC setpoint throttling to pre-cool living areas during solar peaks.
 
 ---
 

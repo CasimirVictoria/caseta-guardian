@@ -203,18 +203,54 @@ Connectant a Cerbo GX (192.168.1.106)...
 
 ---
 
-## 🗺️ Full de Ruta i Desenvolupaments Futurs: Autoregulació Climàtica Multihabitació
+---
 
-Implementar l'autoregulació intel·ligent de la temperatura a les diferents estances de la casa (saló, habitacions, etc.) en funció dels excedents solars és arquitectònicament molt senzill i està previst en el full de ruta del projecte:
+## 📡 Subsistema Zigbee Natiu en Pure-Python i Seguiment Bioclimàtic en RAM
 
-1. **Integració Tuya Cloud OpenAPI / Local IR:** Ja implementada i validada amb èxit en producció per a l'aire condicionat del saló ([`temperatura_salo`](file:///home/casimir/temperatura_salo.sh) i protecció per bateria $<65\%$).
-2. **Control 100% Autònom i Resilient per Zigbee:**
-   - El maquinari físic ja està disponible i llest per al seu desplegament: Coordinador USB Zigbee (`Sonoff Zigbee 3.0 Plus`), emissors d'infrarojos Zigbee i sensors de precisió de temperatura i humitat Zigbee per a cada habitació.
-   - La integració de `zigbee2mqtt` en un equip amfitrió local permetrà publicar les lectures de temperatura de cada estança i enviar comandes IR directament al broker MQTT del Cerbo GX, amb $100\%$ d'autonomia local i zero dependència d'Internet o del núvol.
-3. **Modulació de Climatització per Excedent Solar:**
-   - Ajust dinàmic de consigna: pre-refredament automàtic d'habitacions en moments de màxim pic solar i suavització de consums quan convinga blindar la reserva de la bateria.
+La instal·lació compta amb un **Coordinador Zigbee 3.0 integrat directament al Cerbo GX** i supervisat per `daemontools`:
 
-*Aquesta ampliació s'implementarà en futures versions tan bon punt disposem de temps per al muntatge i configuració física dels sensors.*
+```
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │              📡 SUBSISTEMA ZIGBEE 3.0 NATIU EN PURE-PYTHON 3             │
+  │                                                                          │
+  │  • Coordinador: TI CC2652P (ZG-808Z) al port USB del Cerbo (/dev/ttyUSB0)│
+  │  • Controlador: 100% Pure Python 3 (zigpy + zigpy-znp / ControllerApp)   │
+  │  • Desbloqueig Udev: /etc/udev/rules.d/zz-zigbee-ignore.rules            │
+  │  • BD Activa: 100% en RAM (tmpfs a /run/caseta-zigbee/zigbee.db)         │
+  │  • Telemetria en Directe: Publicada a FlashMQ al tòpic 'caseta/clima'    │
+  │  • Històric Diari: 1 sola línia JSON/dia a les 23:59h (~200 B/dia)       │
+  │  • Zero Desgast de Disc: 0 Bytes/s d'escriptura a la Flash eMMC          │
+  └──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 🔧 Com hem solucionat el segrest del port sèrie a Venus OS (`serial-starter`):
+Per defecte, Venus OS executa el servei `serial-starter`, que escaneja contínuament qualsevol dispositiu connectat a `/dev/ttyUSB*` per intentar assignar-lo a serveis D-Bus de Victron (`dbus-cgwacs`, `vedirect`, etc.).
+
+Per alliberar el coordinador Zigbee de forma blindada i permanent sense afectar la resta de serveis de Victron, vam desplegar una regla udev prioritària a `/etc/udev/rules.d/zz-zigbee-ignore.rules`:
+```udev
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ENV{VE_SERVICE}:=""
+```
+Gràcies a l'operador d'assignació final (`:=`), Venus OS ignora el port USB del xip Zigbee, deixant `/dev/ttyUSB0` exclusivament disponible per al controlador natiu en Python (`zigpy`).
+
+### 🛡️ Arquitectura de Zero Desgast de Disc (Zero Disk Wear):
+1. **Emmagatzematge Volàtil en RAM:** Tota la base de dades activa i la memòria cau d'atributs funcionen exclusivament en memòria volàtil a `/run/caseta-zigbee/zigbee.db`.
+2. **Còpia de Seguretat de la Topologia:** Es desa una còpia a Flash (`/data/caseta-guardian/zigbee_backup.db`) **únicament quan s'emparella un dispositiu nou**, evitant cicles d'escriptura innecessaris.
+3. **Resum Diari d'Inèrcia Tèrmica:** Cada dia a les **`23:59h`**, el dimoni genera **un únic registre JSON compacte** a `/data/caseta-guardian/history/historic_clima.jsonl` registrant:
+   - $T_{\text{max}}$ i $T_{\text{min}}$ amb l'hora exacta en què es produeixen ($t_{\text{max}}$, $t_{\text{min}}$).
+   - Mitjana diària de temperatura ($T_{\text{avg}}$).
+   - Valors màxims d'humitat i il·luminació (Lux).
+
+### 📊 Sensors Físics Connectats i Actius:
+* 👶 **Sensor 1 (Habitació xiquets):** Termohigròmetre de precisió Tuya TS0201 ($28.60\text{ ºC}$ / $40.0\%$ humitat / Pila $100\%$).
+* 🛋️ **Sensor 2 (Saló):** Multisensor 4-en-1 HOBEIAN ZG-204ZV ($28.60\text{ ºC}$ / $43.4\%$ humitat / $0\text{ Lux}$ / Radar PIR de presència).
+
+---
+
+## 🗺️ Full de Ruta de Climatització Autònoma
+
+1. **Integració Tuya Cloud OpenAPI / Local IR:** Totalment operativa per al control de l'aire condicionat del saló.
+2. **Coordinació Zigbee Offline:** Dimoni Zigbee natiu publicant telemetria ambiental a MQTT local.
+3. **Modulació de Consigna per Excedent:** Pre-refredament intel·ligent d'estances durant les hores punta de radiació solar.
 
 ---
 
