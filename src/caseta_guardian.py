@@ -147,8 +147,8 @@ class CasetaGuardian:
         self.blackout_risk = 0
         self.target_reserve_soc = 85.0
         
-        # Acumulats d'avui
         self.current_day_str = get_madrid_now().strftime("%Y-%m-%d")
+        self.is_holiday = self.check_is_holiday_or_weekend()
         self.solar_kwh_today = 0.0
         self.solar_peak_w = 0.0
         self.consumption_kwh_today = 0.0
@@ -164,6 +164,31 @@ class CasetaGuardian:
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
         self.load_daily_stats()
+
+    def check_is_holiday_or_weekend(self, now=None) -> bool:
+        """Determina si avui és cap de setmana o festiu oficial (P3 Vall 24h) - Executat NOMÉS 1 cop al dia a mitjanit."""
+        if now is None:
+            now = get_madrid_now()
+        if now.weekday() in (5, 6):
+            return True
+            
+        y, m, d = now.year, now.month, now.day
+        fixed_holidays = [
+            (1, 1), (1, 6), (3, 19), (5, 1), (6, 24), (8, 15),
+            (10, 9), (10, 12), (11, 1), (12, 6), (12, 8), (12, 25),
+        ]
+        if (m, d) in fixed_holidays:
+            return True
+            
+        easter = get_easter_date(y)
+        good_friday = easter - datetime.timedelta(days=2)
+        easter_monday = easter + datetime.timedelta(days=1)
+        
+        today_date = now.date()
+        if today_date in (good_friday, easter_monday):
+            return True
+            
+        return False
 
     def load_daily_stats(self):
         """Carrega els acumulats del dia d'avui si el dimoni es reinicia per evitar reiniciar a 0 kWh."""
@@ -242,34 +267,10 @@ class CasetaGuardian:
         except Exception as e:
             log.warning(f"No s'ha pogut enviar notificació ntfy: {e}")
 
-    def is_holiday_or_weekend(self) -> bool:
-        """Determina si avui és cap de setmana o festiu oficial (P3 Vall 24h)."""
-        now = get_madrid_now()
-        if now.weekday() in (5, 6):
-            return True
-            
-        y, m, d = now.year, now.month, now.day
-        fixed_holidays = [
-            (1, 1), (1, 6), (3, 19), (5, 1), (6, 24), (8, 15),
-            (10, 9), (10, 12), (11, 1), (12, 6), (12, 8), (12, 25),
-        ]
-        if (m, d) in fixed_holidays:
-            return True
-            
-        easter = get_easter_date(y)
-        good_friday = easter - datetime.timedelta(days=2)
-        easter_monday = easter + datetime.timedelta(days=1)
-        
-        today_date = now.date()
-        if today_date in (good_friday, easter_monday):
-            return True
-            
-        return False
-
     def update_energy_forecast(self):
-        """Consulta Open-Meteo per estimar radiació solar i temperatura màxima a Ador."""
+        """Consulta Open-Meteo per estimar radiació solar i temperatura màxima a Ador (cada 60 minuts)."""
         now = time.time()
-        if now - self.last_forecast_time < 1800:
+        if now - self.last_forecast_time < 3600:
             return
             
         self.last_forecast_time = now
@@ -398,7 +399,7 @@ class CasetaGuardian:
         except Exception as e:
             log.warning(f"Error enviant comanda Tuya Cloud: {e}")
 
-    def sync_cerbo_min_soc(self):
+    def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
         if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
             return
@@ -409,11 +410,12 @@ class CasetaGuardian:
             return
         self.last_soc_eval_time = now
 
-        now_madrid = get_madrid_now()
+        if now_madrid is None:
+            now_madrid = get_madrid_now()
         current_hour = now_madrid.hour
         current_minute = now_madrid.minute
         time_decimal = current_hour + (current_minute / 60.0)
-        is_weekend_or_hol = self.is_holiday_or_weekend()
+        is_weekend_or_hol = self.is_holiday
         
         # 1. 🚨 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
         if self.blackout_risk >= 60:
@@ -510,7 +512,7 @@ class CasetaGuardian:
         except Exception as e:
             log.warning(f"Error guardant stats a disc: {e}")
 
-    def update_energy_integrals(self):
+    def update_energy_integrals(self, now_madrid=None):
         now = time.time()
         if self.last_stats_calc_time == 0.0:
             self.last_stats_calc_time = now
@@ -519,11 +521,15 @@ class CasetaGuardian:
         dt = now - self.last_stats_calc_time
         self.last_stats_calc_time = now
         
-        today_str = get_madrid_now().strftime("%Y-%m-%d")
+        if now_madrid is None:
+            now_madrid = get_madrid_now()
+            
+        today_str = now_madrid.strftime("%Y-%m-%d")
         if today_str != self.current_day_str:
             self.save_daily_stats()
             self.append_to_history(self.current_day_str)
             self.current_day_str = today_str
+            self.is_holiday = self.check_is_holiday_or_weekend(now_madrid)
             self.solar_kwh_today = 0.0
             self.solar_peak_w = 0.0
             self.consumption_kwh_today = 0.0
@@ -536,7 +542,7 @@ class CasetaGuardian:
             self.relay_switch_count = 0
             self.max_cell_delta_today = 0.0
             self.tuya_ac_turned_off_today = False
-            log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str}")
+            log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str} (Festiu/CapSetmana: {self.is_holiday})")
 
         hours = dt / 3600.0
         
@@ -555,9 +561,8 @@ class CasetaGuardian:
                 imp_kwh = (self.grid_p / 1000.0) * hours
                 self.grid_import_kwh_today += imp_kwh
                 
-                now_madrid = get_madrid_now()
                 ch = now_madrid.hour
-                if self.is_holiday_or_weekend():
+                if self.is_holiday:
                     self.p3_kwh_today += imp_kwh
                 elif ch in (10, 11, 12, 13, 18, 19, 20, 21):
                     self.p1_kwh_today += imp_kwh
@@ -718,14 +723,15 @@ class CasetaGuardian:
         while self.running:
             try:
                 now = time.time()
+                now_madrid = get_madrid_now()
                 
-                if now - self.last_keepalive_time >= 20:
+                if now - self.last_keepalive_time >= 30:
                     self.client.publish(f"R/{self.portal_id}/keepalive", "")
                     self.last_keepalive_time = now
                     
-                self.sync_cerbo_min_soc()
+                self.sync_cerbo_min_soc(now_madrid)
                 self.update_energy_forecast()
-                self.update_energy_integrals()
+                self.update_energy_integrals(now_madrid)
                 self.evaluate_state_machine()
                 
                 time.sleep(1.0)
