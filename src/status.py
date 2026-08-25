@@ -89,15 +89,15 @@ def get_telemetry():
     found_portal = [PORTAL_ID]
     mqtt_stats = [None]
     mqtt_forecast = [None]
+    mqtt_clima = [None]
 
     def on_connect(client, userdata, flags, rc, properties=None):
-        # Subscripció ultra-ràpida i focalitzada en lloc de demanar tot el broker ('#')
         client.subscribe("N/+/battery/512/#")
         client.subscribe("N/+/pvinverter/#")
         client.subscribe("N/+/system/0/#")
         client.subscribe("N/+/vebus/276/#")
         client.subscribe("caseta/#")
-        client.publish("R/48e7da8782fd/keepalive", "")
+        client.publish(f"R/{PORTAL_ID}/keepalive", "")
 
     def on_message(client, userdata, msg):
         try:
@@ -110,6 +110,8 @@ def get_telemetry():
                 mqtt_stats[0] = val
             elif "caseta/forecast" in msg.topic:
                 mqtt_forecast[0] = val
+            elif "caseta/clima" in msg.topic:
+                mqtt_clima[0] = json.loads(msg.payload.decode())
         except Exception:
             pass
 
@@ -121,10 +123,9 @@ def get_telemetry():
         client.connect(CERBO_IP, 1883, 2)
     except Exception as e:
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
-        return {}, None, None, None
+        return {}, None, None, None, None
 
     client.loop_start()
-    # Polling ultra-ràpid de 20ms: ix immediatament quan arriben les claus essencials (habitualment en <100ms)
     for _ in range(35):
         portal = found_portal[0]
         if (
@@ -137,7 +138,7 @@ def get_telemetry():
         
     client.loop_stop()
     client.disconnect()
-    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0]
+    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0]
 
 def get_forecast(mqtt_forecast=None):
     if mqtt_forecast:
@@ -226,7 +227,7 @@ def main():
     now_ts = datetime.datetime.now().strftime("%d/%m/%Y - %H:%M:%S")
     print(f"{DIM}🕒 Registre en directe: {now_ts}{RESET}\n")
     
-    data, portal, mqtt_stats, mqtt_forecast = get_telemetry()
+    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima = get_telemetry()
     if not data or not portal:
         print(f"{RED}No s'han pogut obtenir dades del Cerbo GX.{RESET}\n")
         return
@@ -337,6 +338,30 @@ def main():
         print(box_line(f"   • Temp. Màx / Ocàs (21h):   {max_t:.1f} ºC / {sunset_t:.1f} ºC"))
         print(box_line(f"   • Índex de Risc de Tall:    {risk_color}{BOLD}{risk_label} ({risk}%){RESET}"))
         print(box_line(f"   • Objectiu Reserva Nocturna:  {BOLD}{target_soc}% de Bateria SAI{RESET}"))
+
+    if mqtt_clima and mqtt_clima.get("temperatura") is not None:
+        c_temp = mqtt_clima.get("temperatura")
+        c_hum = mqtt_clima.get("humitat")
+        c_tmax = mqtt_clima.get("t_max")
+        c_tmax_h = mqtt_clima.get("t_max_hora")
+        c_tmin = mqtt_clima.get("t_min")
+        c_tmin_h = mqtt_clima.get("t_min_hora")
+        c_lux = mqtt_clima.get("lux")
+        c_pres = mqtt_clima.get("presencia")
+
+        temp_color = RED if c_temp >= 30 else (GREEN if c_temp <= 25 else YELLOW)
+        pres_str = f"{MAGENTA}{BOLD}🚶 Presència Detectada{RESET}" if c_pres else f"{GREEN}🟢 Zona Buida (Sense presència){RESET}"
+        
+        tmax_str = f"{c_tmax:.1f} ºC ({c_tmax_h}h)" if (c_tmax is not None and c_tmax_h) else "N/A"
+        tmin_str = f"{c_tmin:.1f} ºC ({c_tmin_h}h)" if (c_tmin is not None and c_tmin_h) else "N/A"
+        lux_str = f"{c_lux:.0f} Lux" if c_lux is not None else "N/A"
+        hum_str = f"{c_hum:.1f} %" if c_hum is not None else "N/A"
+
+        print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+        print(box_line(f"🌡️ {BOLD}CLIMA & BIOCLIMÀTICA (Zigbee Natiu en RAM - Saló){RESET}"))
+        print(box_line(f"   • Temp. Saló / Humitat:     {temp_color}{BOLD}{c_temp:.2f} ºC{RESET}  |  {CYAN}{BOLD}{hum_str}{RESET}"))
+        print(box_line(f"   • Pic Màxim / Mínim d'Hui:  {RED}{tmax_str}{RESET}  |  {BLUE}{tmin_str}{RESET}"))
+        print(box_line(f"   • Il·luminació & Presència: {YELLOW}{BOLD}{lux_str}{RESET}  |  {pres_str}"))
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     print(f"  Guardià Natiu (caseta-guardian): {GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}")
