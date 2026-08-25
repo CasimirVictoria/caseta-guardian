@@ -90,25 +90,26 @@ Unlike conventional off-grid setups that cycle the battery deeply every single d
   │    • Overnight 100% Top-Balancing using off-peak electricity rates.    │
   │    • Instant grid reconnection if discharge exceeds 15 A (>750 W)      │
   │      for >5 s or if SoC drops below 80% in islanded Mode 2.            │
-  │    • HVAC Emergency Cutoff: Automatic IR shutdown of air conditioning  │
-  │      if SoC drops below 65% to protect the UPS reserve.                │
+  │    • HVAC Emergency Cutoff: Automatic Tuya Cloud IR shutdown if SoC    │
+  │      drops below 65% to protect the 24-hour UPS reserve.               │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 2. 🔌 RESILIENCE & UPS BACKUP (Priority 1)                             │
-  │    • Automated weather modeling via Open-Meteo API every 30 minutes.   │
+  │    • Automated weather modeling via Open-Meteo API every 60 minutes.   │
   │    • High Blackout Risk trigger (Tmax >= 38ºC, T21h >= 31ºC, or low    │
-  │      grid voltage <195V) locks the reserve floor to 95% – 100%.        │
+  │      grid voltage <190V) locks the reserve floor to 95% – 100%.        │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 3. 🏝️ ZERO GRID FEED-IN (Priority 2)                                  │
-  │    • Switches to Inverter Only (Mode 2) only when: SoC > 84%, export   │
-  │      > 100 W for >30 s, and battery is resting (<2 A discharge).       │
-  │    • MultiPlus shifts AC frequency to throttle the PV inverter.        │
+  │    • Switches to Inverter Only (Mode 2) only when: SoC > 88%, export   │
+  │      > 50 W for >30 s, and battery is resting (<2 A discharge).        │
+  │    • MultiPlus shifts AC frequency (50.2 - 51.5 Hz) to throttle PV.    │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 4. ☀️ MAXIMUM SOLAR HARVEST (Priority 3)                               │
-  │    • 24-Hour Circadian Schedule:                                       │
-  │      - 00:01h - 07:00h: Minimum SoC = 100% (Top-balancing & max UPS).   │
-  │      - 07:00h - 17:00h: Minimum SoC = 70% (Headroom to absorb sun).    │
-  │      - 17:00h - 20:00h: Afternoon Deficit -> Automatically raises to   │
-  │        80% when consumption exceeds solar to preserve the night reserve│
+  │    • 4-Milestone Clock Schedule:                                       │
+  │      - 00:00h - 06:59h: Min SoC = 100% (Super-off-peak & Top-balance). │
+  │      - 07:00h - 09:29h: Min SoC = 85% (Morning breakfast buffer).      │
+  │      - 09:30h - 16:29h: Min SoC = 75% (880 Wh headroom for solar peak).│
+  │      - 16:30h - 23:59h: Min SoC = 85% (Evening/night UPS reserve).     │
+  │      - Weekends & Holidays (18h+): Min SoC = 100% (24h flat valley).   │
   └────────────────────────────────────────────────────────────────────────┘
 ```
 

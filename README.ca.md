@@ -91,24 +91,25 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
   │    • Reconnexió immediata a xarxa si la descàrrega supera 15 A         │
   │      (>750 W) durant >5 s o si el SoC baixa del 80% en mode aïllat.    │
   │    • Escut de Seguretat Climatització: Apagada automàtica de l'aire     │
-  │      condicionat per IR si el SoC baixa del 65%.                       │
+  │      condicionat per Tuya Cloud IR si el SoC baixa del 65%.            │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 2. 🔌 RESILIÈNCIA I SAI (Prioritat 1)                                  │
-  │    • Consulta meteorològica Open-Meteo cada 30 minuts.                 │
+  │    • Consulta meteorològica Open-Meteo cada 60 minuts.                 │
   │    • Si detecta onada de calor extrema (Tmax >= 38ºC o T21h >= 31ºC)   │
-  │      o tensió baixa de xarxa (<195V), blinda el sòl al 95% – 100%.     │
+  │      o tensió baixa de xarxa (<190V), blinda el sòl al 95% – 100%.     │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 3. 🏝️ ZERO REGAL (Prioritat 2)                                         │
-  │    • Commuta a Inverter Only (Mode 2) només si: SoC > 84%, injecció    │
-  │      > 100 W durant més de 30 segons, i bateria en repòs (<2 A).       │
-  │    • El MultiPlus puja la freqüència de CA per frenar el solar.        │
+  │    • Commuta a Inverter Only (Mode 2) només si: SoC > 88%, injecció    │
+  │      > 50 W durant més de 30 segons, i bateria en repòs (<2 A).        │
+  │    • El MultiPlus puja la freqüència de CA (50.2-51.5 Hz) per frenar.  │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 4. ☀️ MÀXIM APROFITAMENT SOLAR (Prioritat 3)                            │
-  │    • Cicle Circadiari 24h:                                             │
-  │      - 00:01h a 07:00h: Sòl al 100% (Top-balancing i SAI nocturn).     │
-  │      - 07:00h a 17:00h: Sòl al 70% (Espai buit per absorbir sol).      │
-  │      - 17:00h a 20:00h: Dèficit de tarda -> Puja automàticament a 80%  │
-  │        per preservar la reserva abans de la nit.                       │
+  │    • Cicle Circadiari de 4 Fites per Rellotge:                         │
+  │      - 00:00h a 06:59h: Sòl al 100% (Supervall 7 cts & Top-Balancing). │
+  │      - 07:00h a 09:29h: Sòl al 85% (Transició matí per al desdejuni).   │
+  │      - 09:30h a 16:29h: Sòl al 75% (880 Wh de vas buit per al sol).    │
+  │      - 16:30h a 23:59h: Sòl al 85% (Reserva de seguretat per a la nit).│
+  │      - Caps de Setmana i Festius (18h+): Sòl al 100% (Tarifa vall 24h). │
   └────────────────────────────────────────────────────────────────────────┘
 ```
 
