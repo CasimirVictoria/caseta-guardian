@@ -427,23 +427,17 @@ class CasetaGuardian:
         # 3. ☕ Matí Primer Cafè / Transició (07:00h a 09:29h Madrid)
         elif 7.0 <= time_decimal < 9.5:
             target = 85.0
-            phase_name = f"☕ Matí Transició (85% Coixí Inicial - Sol: {self.pv_p:.0f}W)"
+            phase_name = "☕ Matí Transició (85% Coixí Inicial)"
 
-        # 4. ☀️ Finestra Solar Central d'Estiu (09:30h a 16:29h Madrid):
+        # 4. ☀️ Finestra Solar Central d'Estiu (09:30h a 16:29h Madrid): 75% Fix Pla
         elif 9.5 <= time_decimal < 16.5:
-            # Si el sol és radiant o supera la casa amb escreix: baixem al 70%
-            if self.pv_p >= 450.0 or (self.pv_p >= 300.0 and self.pv_p >= self.ac_loads):
-                target = 70.0
-                phase_name = f"☀️ Sol Radiant Actiu ({self.pv_p:.0f}W > {self.ac_loads:.0f}W -> 70% Absorció Màxima)"
-            # Per defecte al migdia: sòl equilibrat del 75% (obre 800 Wh de buit i manté 10h de SAI)
-            else:
-                target = 75.0
-                phase_name = f"🌤️ Finestra Solar Central ({self.pv_p:.0f}W -> 75% Coixí Solar & 10h SAI)"
+            target = 75.0
+            phase_name = "☀️ Finestra Solar Central (75% Fix Pla - Vas Buit 880Wh)"
 
         # 5. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
-        elif is_weekend_or_hol and (time_decimal >= 18.0 or (time_decimal >= 16.5 and (self.pv_p < self.ac_loads or self.pv_p < 200.0))):
+        elif is_weekend_or_hol and time_decimal >= 18.0:
             target = 100.0
-            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing Avançat a 7 cts)"
+            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing a 7 cts)"
 
         # 6. 🌇 Tarda / Vespre Feiners (16:30h a 23:59h Madrid):
         else:
