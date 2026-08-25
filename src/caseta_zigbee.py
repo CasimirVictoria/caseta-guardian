@@ -246,6 +246,56 @@ class ZigbeeManager:
         except Exception as e:
             log.error("Error vinculant listeners: %s", e)
 
+    def parse_tuya_dp(self, s, raw_bytes):
+        """Descodifica la trama de Datapoints privats de Tuya (0xEF00)."""
+        try:
+            if not isinstance(raw_bytes, (bytes, bytearray)) or len(raw_bytes) < 6:
+                return
+            idx = 2  # Salta seq (2 bytes)
+            while idx + 4 <= len(raw_bytes):
+                dp_id = raw_bytes[idx]
+                dp_type = raw_bytes[idx + 1]
+                dp_len = (raw_bytes[idx + 2] << 8) | raw_bytes[idx + 3]
+                idx += 4
+                if idx + dp_len > len(raw_bytes):
+                    break
+                val_bytes = raw_bytes[idx : idx + dp_len]
+                idx += dp_len
+
+                # DP 1: Presència (Bool/Enum)
+                if dp_id == 1 and dp_len >= 1:
+                    is_pres = bool(val_bytes[0])
+                    s["presencia"] = is_pres
+                    log.info(f"🚶 Tuya DP1 Presència ({s['nom']}): {'🚶 DETECTADA' if is_pres else '🟢 REPOS'}")
+
+                # DP 106 / 12 / 101: Il·luminació (Lux)
+                elif dp_id in (106, 12, 101) and dp_len >= 1:
+                    lux_val = int.from_bytes(val_bytes, "big")
+                    s["lux"] = float(lux_val)
+                    if lux_val > s.get("lux_max", 0):
+                        s["lux_max"] = lux_val
+                        s["lux_max_hora"] = now_madrid().strftime("%H:%M")
+                    log.info(f"☀️ Tuya DP{dp_id} Lux ({s['nom']}): {lux_val} Lux")
+
+                # DP 2 / 102: Temperatura (0.1 ºC o 0.01 ºC)
+                elif dp_id in (2, 102) and dp_len >= 1:
+                    raw_t = int.from_bytes(val_bytes, "big")
+                    t = self.parse_temperature(raw_t)
+                    if t is not None:
+                        s["temperatura"] = t
+                        log.info(f"🌡️ Tuya DP{dp_id} Temp ({s['nom']}): {t} ºC")
+
+                # DP 3 / 103: Humitat (%)
+                elif dp_id in (3, 103) and dp_len >= 1:
+                    raw_h = int.from_bytes(val_bytes, "big")
+                    h = self.parse_humidity(raw_h)
+                    if h is not None:
+                        s["humitat"] = h
+                        log.info(f"💧 Tuya DP{dp_id} Hum ({s['nom']}): {h} %")
+            self.publish_clima_telemetry()
+        except Exception as e:
+            log.debug("Error descodificant Tuya DP: %s", e)
+
     def on_cluster_command(self, cluster, tsn, command_id, args):
         dev = getattr(getattr(cluster, "endpoint", None), "device", None)
         ieee_str = str(getattr(dev, "ieee", ""))
@@ -268,8 +318,10 @@ class ZigbeeManager:
 
         # Tuya Private Cluster (0xEF00)
         elif cluster.cluster_id == 0xEF00:
-            log.info(f"📡 Paquet Tuya DP rebut de {s['nom']}: cmd={command_id}, args={args}")
-            self.publish_clima_telemetry()
+            if args:
+                raw_payload = args[0] if isinstance(args[0], (bytes, bytearray)) else (args if isinstance(args, (bytes, bytearray)) else None)
+                if raw_payload:
+                    self.parse_tuya_dp(s, raw_payload)
 
     def on_attribute_updated(self, cluster, attr_id, value):
         dev = getattr(getattr(cluster, "endpoint", None), "device", None)
