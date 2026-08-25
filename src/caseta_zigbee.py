@@ -5,7 +5,7 @@ Suport complet per a múltiples sensors (Termohigròmetre + Multisensor 4-en-1).
 
 Filosofia Zero Desgast de Disc:
 - Base de dades activa en RAM (tmpfs a /run/caseta-zigbee/zigbee.db).
-- Captura completa d'atributs ZCL estàndard, ordres IAS Zone (presència) i Tuya DP.
+- Captura completa d'atributs ZCL estàndard, ordres IAS Zone (presència) i Tuya DP mitjançant ClusterListener wrappers.
 - Auto-vinculació de nous dispositius en calent.
 """
 
@@ -46,10 +46,10 @@ MQTT_PORT = 1883
 class ZigbeeManager:
     def __init__(self):
         self.app = None
-        self.listener = None
         self.mqtt_client = None
         self.running = True
         self.last_saved_day = None
+        self.bound_clusters = set()
         self.sensors = {
             "sensor_1": {
                 "nom": "Habitació xiquets (TS0201)",
@@ -231,20 +231,20 @@ class ZigbeeManager:
             return 0.0
 
     def attach_device_listeners(self, dev):
-        if not dev or not self.listener:
+        if not dev:
             return
         try:
-            dev.add_listener(self.listener)
+            ieee_str = str(dev.ieee)
             for ep in dev.endpoints.values():
-                if hasattr(ep, "in_clusters"):
-                    for cl in ep.in_clusters.values():
-                        cl.add_listener(self.listener)
-                if hasattr(ep, "out_clusters"):
-                    for cl in ep.out_clusters.values():
-                        cl.add_listener(self.listener)
-            log.info(f"Listeners vinculats al dispositiu {dev.ieee} ({dev.model})")
+                for cl_dict in (getattr(ep, "in_clusters", {}), getattr(ep, "out_clusters", {})):
+                    for cid, cl in cl_dict.items():
+                        bind_key = (ieee_str, getattr(ep, "endpoint_id", 1), cid)
+                        if bind_key not in self.bound_clusters:
+                            cl.add_listener(ClusterListener(self, cl))
+                            self.bound_clusters.add(bind_key)
+            log.info(f"Listeners vinculats als clústers del dispositiu {dev.ieee} ({getattr(dev, 'model', 'Device')})")
         except Exception as e:
-            log.debug("Error vinculant listeners: %s", e)
+            log.error("Error vinculant listeners: %s", e)
 
     def on_cluster_command(self, cluster, tsn, command_id, args):
         dev = getattr(getattr(cluster, "endpoint", None), "device", None)
@@ -376,11 +376,25 @@ class ZigbeeManager:
         self.attach_device_listeners(device)
 
     def on_device_initialized(self, device):
-        log.info(f"✅ Dispositiu emparellat i inicialitzat: {device.ieee} ({device.manufacturer} - {device.model})")
+        log.info(f"✅ Dispositiu emparellat i inicialitzat: {device.ieee} ({getattr(device, 'manufacturer', '')} - {getattr(device, 'model', '')})")
         self.attach_device_listeners(device)
         self.backup_to_flash()
 
-class ListenerProxy:
+class ClusterListener:
+    def __init__(self, manager, cluster):
+        self.mgr = manager
+        self.cluster = cluster
+
+    def attribute_updated(self, attr_id, value, *args, **kwargs):
+        self.mgr.on_attribute_updated(self.cluster, attr_id, value)
+
+    def cluster_command(self, tsn, command_id, args, *extra_args, **kwargs):
+        self.mgr.on_cluster_command(self.cluster, tsn, command_id, args)
+
+    def zdo_command(self, *args, **kwargs):
+        pass
+
+class AppListener:
     def __init__(self, manager):
         self.mgr = manager
 
@@ -389,12 +403,6 @@ class ListenerProxy:
 
     def raw_device_initialized(self, device):
         self.mgr.on_device_initialized(device)
-
-    def attribute_updated(self, cluster, attr_id, value):
-        self.mgr.on_attribute_updated(cluster, attr_id, value)
-
-    def cluster_command(self, cluster, tsn, command_id, args):
-        self.mgr.on_cluster_command(cluster, tsn, command_id, args)
 
 async def main():
     manager = ZigbeeManager()
@@ -416,41 +424,10 @@ async def main():
         start_radio=True
     )
     manager.app = app
-    listener = ListenerProxy(manager)
-    manager.listener = listener
-    app.add_listener(listener)
+    app.add_listener(AppListener(manager))
 
     for dev in app.devices.values():
         manager.attach_device_listeners(dev)
-
-    # Inicialitzem els sensors coneguts si ja tenen atributs a la BD
-    for dev in app.devices.values():
-        ieee_str = str(dev.ieee)
-        if ieee_str == "00:12:4b:00:30:db:ef:c5":
-            continue
-        s_key = manager.get_sensor_key(ieee_str)
-        s = manager.sensors[s_key]
-        for ep in dev.endpoints.values():
-            if 0x0402 in getattr(ep, "in_clusters", {}):
-                raw_t = ep.in_clusters[0x0402].get(0)
-                if raw_t is not None:
-                    t = manager.parse_temperature(raw_t)
-                    if t is not None:
-                        s["temperatura"] = t
-                        s["t_max"] = t
-                        s["t_min"] = t
-                        s["t_max_hora"] = now_madrid().strftime("%H:%M")
-                        s["t_min_hora"] = now_madrid().strftime("%H:%M")
-            if 0x0405 in getattr(ep, "in_clusters", {}):
-                raw_h = ep.in_clusters[0x0405].get(0)
-                if raw_h is not None:
-                    h = manager.parse_humidity(raw_h)
-                    if h is not None:
-                        s["humitat"] = h
-            if 0x0400 in getattr(ep, "in_clusters", {}):
-                raw_l = ep.in_clusters[0x0400].get(0)
-                if raw_l is not None:
-                    s["lux"] = manager.parse_lux(raw_l)
 
     manager.publish_clima_telemetry()
     log.info(f"🟢 Dimoni Zigbee Natiu 100% operatiu a la RAM! (Dispositius coneguts: {len(app.devices)})")
