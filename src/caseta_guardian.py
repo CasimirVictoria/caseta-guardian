@@ -133,6 +133,7 @@ class CasetaGuardian:
         self.last_mode_switch_time = 0.0
         self.last_forecast_time = 0.0
         self.last_stats_calc_time = 0.0
+        self.last_stats_publish_time = 0.0
         self.last_keepalive_time = 0.0
         self.last_applied_min_soc = None
         self.last_soc_eval_time = 0.0
@@ -479,6 +480,36 @@ class CasetaGuardian:
         total_subtotal = POTENCIA_FIXED_DAY + energy_cost
         return round(total_subtotal * TAX_MULTIPLIER, 2)
 
+    def save_daily_stats(self):
+        """Guarda els acumulats a disc únicament a mitjanit o a l'aturar el servei (1 cop al dia)."""
+        cov_pct = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
+        cost_today = self.calculate_today_cost()
+        stats = {
+            "date": self.current_day_str,
+            "solar_kwh_today": round(self.solar_kwh_today, 2),
+            "solar_peak_w": round(self.solar_peak_w, 1),
+            "consumption_kwh_today": round(self.consumption_kwh_today, 2),
+            "grid_import_kwh_today": round(self.grid_import_kwh_today, 2),
+            "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
+            "solar_coverage_percent": round(min(100.0, cov_pct), 1),
+            "cost_total_today": cost_today,
+            "p1_kwh_today": round(self.p1_kwh_today, 3),
+            "p2_kwh_today": round(self.p2_kwh_today, 3),
+            "p3_kwh_today": round(self.p3_kwh_today, 3),
+            "mode2_time_minutes": round(self.mode2_time_seconds / 60.0, 1),
+            "relay_switch_count": self.relay_switch_count,
+            "max_cell_delta_today": round(self.max_cell_delta_today, 1),
+            "soh_bms": round(self.soh, 0),
+            "timestamp": time.time()
+        }
+        try:
+            persistent_file = "/data/caseta-guardian/caseta_daily_stats.json" if os.path.exists("/data/caseta-guardian") else "/tmp/caseta_daily_stats.json"
+            with open(persistent_file, "w") as f:
+                json.dump(stats, f)
+            log.info(f"💾 [DISC FLASH] Acumulats diaris arxivats a disc: {self.solar_kwh_today:.2f} kWh solars, {cost_today:.2f} €")
+        except Exception as e:
+            log.warning(f"Error guardant stats a disc: {e}")
+
     def update_energy_integrals(self):
         now = time.time()
         if self.last_stats_calc_time == 0.0:
@@ -490,6 +521,7 @@ class CasetaGuardian:
         
         today_str = get_madrid_now().strftime("%Y-%m-%d")
         if today_str != self.current_day_str:
+            self.save_daily_stats()
             self.append_to_history(self.current_day_str)
             self.current_day_str = today_str
             self.solar_kwh_today = 0.0
@@ -541,39 +573,36 @@ class CasetaGuardian:
             if delta_mv > self.max_cell_delta_today:
                 self.max_cell_delta_today = delta_mv
 
-        cov_pct = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
-        cost_today = self.calculate_today_cost()
-
-        stats = {
-            "date": self.current_day_str,
-            "solar_kwh_today": round(self.solar_kwh_today, 2),
-            "solar_peak_w": round(self.solar_peak_w, 1),
-            "consumption_kwh_today": round(self.consumption_kwh_today, 2),
-            "grid_import_kwh_today": round(self.grid_import_kwh_today, 2),
-            "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
-            "solar_coverage_percent": round(min(100.0, cov_pct), 1),
-            "cost_total_today": cost_today,
-            "p1_kwh_today": round(self.p1_kwh_today, 3),
-            "p2_kwh_today": round(self.p2_kwh_today, 3),
-            "p3_kwh_today": round(self.p3_kwh_today, 3),
-            "mode2_time_minutes": round(self.mode2_time_seconds / 60.0, 1),
-            "relay_switch_count": self.relay_switch_count,
-            "max_cell_delta_today": round(self.max_cell_delta_today, 1),
-            "soh_bms": round(self.soh, 0),
-            "timestamp": now
-        }
-        try:
-            with open("/tmp/caseta_daily_stats.json", "w") as f:
-                json.dump(stats, f)
-            persistent_file = "/data/caseta-guardian/caseta_daily_stats.json" if os.path.exists("/data/caseta-guardian") else None
-            if persistent_file:
-                with open(persistent_file, "w") as f:
-                    json.dump(stats, f)
-            if self.client:
-                self.client.publish(f"N/{self.portal_id}/caseta/stats", json.dumps({"value": stats}), retain=True)
-            self.client.publish("caseta/stats", json.dumps({"value": stats}), retain=True)
-        except Exception:
-            pass
+        # Publicació MQTT cada 10 segons (100% en RAM, ZERO accés a disc Flash)
+        if now - self.last_stats_publish_time >= 10.0:
+            self.last_stats_publish_time = now
+            cov_pct = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
+            cost_today = self.calculate_today_cost()
+            stats = {
+                "date": self.current_day_str,
+                "solar_kwh_today": round(self.solar_kwh_today, 2),
+                "solar_peak_w": round(self.solar_peak_w, 1),
+                "consumption_kwh_today": round(self.consumption_kwh_today, 2),
+                "grid_import_kwh_today": round(self.grid_import_kwh_today, 2),
+                "grid_export_kwh_today": round(self.grid_export_kwh_today, 2),
+                "solar_coverage_percent": round(min(100.0, cov_pct), 1),
+                "cost_total_today": cost_today,
+                "p1_kwh_today": round(self.p1_kwh_today, 3),
+                "p2_kwh_today": round(self.p2_kwh_today, 3),
+                "p3_kwh_today": round(self.p3_kwh_today, 3),
+                "mode2_time_minutes": round(self.mode2_time_seconds / 60.0, 1),
+                "relay_switch_count": self.relay_switch_count,
+                "max_cell_delta_today": round(self.max_cell_delta_today, 1),
+                "soh_bms": round(self.soh, 0),
+                "timestamp": now
+            }
+            try:
+                if self.client:
+                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                        self.client.publish(f"N/{self.portal_id}/caseta/stats", json.dumps({"value": stats}), retain=True)
+                    self.client.publish("caseta/stats", json.dumps({"value": stats}), retain=True)
+            except Exception:
+                pass
 
     def evaluate_state_machine(self):
         now = time.time()
@@ -707,6 +736,7 @@ class CasetaGuardian:
                 log.error(f"Error al bucle principal: {e}")
                 time.sleep(2.0)
                 
+        self.save_daily_stats()
         self.client.loop_stop()
         self.client.disconnect()
 
