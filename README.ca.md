@@ -116,7 +116,8 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
   │ 3. 🏝️ ZERO REGAL (Prioritat 2)                                         │
   │    • Commuta a Inverter Only (Mode 2) només si: SoC > 88%, injecció    │
   │      > 50 W durant més de 30 segons, i bateria en repòs (<2 A).        │
-  │    • El MultiPlus puja la freqüència de CA (50.2-51.5 Hz) per frenar.  │
+  │    • El MultiPlus està configurat per pujar automàticament la          │
+  │      freqüència de CA (50.2 - 51.5 Hz) i frenar l'inversor solar.      │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 4. ☀️ MÀXIM APROFITAMENT SOLAR (Prioritat 3)                            │
   │    • Cicle Circadiari de 4 Fites per Rellotge:                         │

@@ -116,7 +116,8 @@ Unlike conventional off-grid setups that cycle the battery deeply every single d
   │ 3. 🏝️ ZERO GRID FEED-IN (Priority 2)                                  │
   │    • Switches to Inverter Only (Mode 2) only when: SoC > 88%, export   │
   │      > 50 W for >30 s, and battery is resting (<2 A discharge).        │
-  │    • MultiPlus shifts AC frequency (50.2 - 51.5 Hz) to throttle PV.    │
+  │    • The MultiPlus is configured to automatically raise the AC         │
+  │      frequency (50.2 - 51.5 Hz) to throttle the grid PV inverter.      │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 4. ☀️ MAXIMUM SOLAR HARVEST (Priority 3)                               │
   │    • 4-Milestone Clock Schedule:                                       │
