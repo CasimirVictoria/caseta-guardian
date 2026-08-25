@@ -679,7 +679,12 @@ class CasetaGuardian:
             log.error(f"Error fatal connectant al broker MQTT del Cerbo GX ({CERBO_IP}): {e}")
             return
             
-        self.client.subscribe("N/#")
+        # Subscripcions quirúrgiques per eliminar el 70% del soroll MQTT innecessari
+        self.client.subscribe("N/+/battery/512/#")
+        self.client.subscribe("N/+/pvinverter/31/#")
+        self.client.subscribe("N/+/system/0/#")
+        self.client.subscribe("N/+/vebus/276/#")
+        self.client.subscribe("caseta/#")
         self.client.loop_start()
         
         self.sync_cerbo_min_soc()
