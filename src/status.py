@@ -349,7 +349,7 @@ def main():
             print("├" + "─" * (BOX_WIDTH + 2) + "┤")
             print(box_line(f"🌡️ {BOLD}CLIMA & BIOCLIMÀTICA (Zigbee Natiu en RAM - 2 Sensors){RESET}"))
             
-            # Sensor 1: Termohigròmetre TS0201
+            # Sensor 1: Habitació xiquets (TS0201)
             if s1.get("temperatura") is not None:
                 t1 = s1.get("temperatura")
                 h1 = s1.get("humitat")
@@ -357,10 +357,10 @@ def main():
                 tmax1 = f"{s1.get('t_max'):.1f} ºC ({s1.get('t_max_hora')}h)" if s1.get('t_max_hora') else "N/A"
                 tmin1 = f"{s1.get('t_min'):.1f} ºC ({s1.get('t_min_hora')}h)" if s1.get('t_min_hora') else "N/A"
                 bat_str1 = f"🔋 Pila: {bat1}%" if bat1 is not None else ""
-                print(box_line(f"   • {BOLD}Termohigròmetre (TS0201):{RESET}  {YELLOW}{BOLD}{t1:.2f} ºC{RESET} | {CYAN}{BOLD}{h1:.1f} %{RESET}  [{bat_str1}]"))
+                print(box_line(f"   • {BOLD}Habitació xiquets:{RESET}     {YELLOW}{BOLD}{t1:.2f} ºC{RESET} | {CYAN}{BOLD}{h1:.1f} %{RESET}  [{bat_str1}]"))
                 print(box_line(f"     └─ Pics d'Hui:  Màx {RED}{tmax1}{RESET} | Mín {BLUE}{tmin1}{RESET}"))
 
-            # Sensor 2: Multisensor 4-en-1 ZG-204ZV
+            # Sensor 2: Saló (ZG-204ZV)
             if s2.get("temperatura") is not None:
                 t2 = s2.get("temperatura")
                 h2 = s2.get("humitat")
@@ -370,7 +370,7 @@ def main():
                 pres_str = f"{MAGENTA}{BOLD}🚶 Presència{RESET}" if pres2 else f"{GREEN}🟢 Repòs{RESET}"
                 lux_str = f"{lux2:.0f} Lux" if lux2 is not None else "N/A"
                 bat_str2 = f"🔋 {bat2}%" if bat2 is not None else ""
-                print(box_line(f"   • {BOLD}Multisensor (ZG-204ZV):{RESET}   {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str} [{bat_str2}]"))
+                print(box_line(f"   • {BOLD}Saló (Multisensor):{RESET}    {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str} [{bat_str2}]"))
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     print(f"  Guardià Natiu (caseta-guardian): {GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}")

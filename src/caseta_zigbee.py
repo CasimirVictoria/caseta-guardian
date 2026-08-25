@@ -45,7 +45,7 @@ class ZigbeeManager:
         self.last_saved_day = None
         self.sensors = {
             "sensor_1": {
-                "nom": "Termohigròmetre TS0201",
+                "nom": "Habitació xiquets (TS0201)",
                 "ieee": "a4:c1:38:8c:5b:70:28:4f",
                 "temperatura": None,
                 "humitat": None,
@@ -57,7 +57,7 @@ class ZigbeeManager:
                 "ultima_actualitzacio": None
             },
             "sensor_2": {
-                "nom": "Multisensor 4-en-1 ZG-204ZV",
+                "nom": "Saló (ZG-204ZV)",
                 "ieee": "a4:c1:38:a6:3a:59:a0:35",
                 "temperatura": None,
                 "humitat": None,
