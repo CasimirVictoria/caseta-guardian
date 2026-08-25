@@ -68,22 +68,23 @@ def get_easter_date(year: int) -> datetime.date:
     return datetime.date(year, month, day)
 
 CONFIG_PATHS = [
-    os.path.join(os.path.dirname(__file__), "..", "config.json"),
-    os.path.expanduser("~/Documents/Segon_Cervell/projects/caseta-guardian/config.json"),
+    "/data/caseta-guardian/config.json",
+    os.path.expanduser("~/.config/caseta/config.json"),
     os.path.expanduser("~/.config/caseta-guardian/config.json"),
-    "/data/caseta-guardian/config.json"
+    os.path.join(os.path.dirname(__file__), "..", "config.json")
 ]
 
-config = {}
-for p in CONFIG_PATHS:
-    if os.path.exists(p):
-        try:
-            with open(p, "r") as f:
-                config = json.load(f)
-            log.info(f"Carregada configuració des de: {p}")
-            break
-        except Exception as e:
-            log.warning(f"No s'ha pogut llegir {p}: {e}")
+def load_config() -> dict:
+    for p in CONFIG_PATHS:
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return {}
+
+config = load_config()
 
 CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.106"))
 PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "48e7da8782fd"))
@@ -268,14 +269,17 @@ class CasetaGuardian:
             log.warning(f"No s'ha pogut enviar notificació ntfy: {e}")
 
     def update_energy_forecast(self):
-        """Consulta Open-Meteo per estimar radiació solar i temperatura màxima a Ador (cada 60 minuts)."""
+        """Consulta Open-Meteo per estimar radiació solar i temperatura màxima (cada 60 minuts)."""
         now = time.time()
         if now - self.last_forecast_time < 3600:
             return
             
         self.last_forecast_time = now
         try:
-            url = "https://api.open-meteo.com/v1/forecast?latitude=39.0&longitude=-0.3&daily=shortwave_radiation_sum,temperature_2m_max&hourly=direct_normal_irradiance,temperature_2m&timezone=Europe%2FMadrid&forecast_days=2"
+            cfg = load_config()
+            lat = cfg.get("latitude", 38.9)
+            lon = cfg.get("longitude", -0.2)
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=shortwave_radiation_sum,temperature_2m_max&hourly=direct_normal_irradiance,temperature_2m&timezone=Europe%2FMadrid&forecast_days=2"
             req = urllib.request.Request(url, headers={"User-Agent": "CasetaGuardian/2.0"})
             with urllib.request.urlopen(req, timeout=10) as rep:
                 data = json.loads(rep.read().decode())
@@ -340,11 +344,16 @@ class CasetaGuardian:
         self.tuya_ac_turned_off_today = True
         
         try:
-            cid = config.get("tuya_cloud_client_id", "YOUR_TUYA_CLIENT_ID")
-            sec = config.get("tuya_cloud_secret", "YOUR_TUYA_SECRET")
-            infrared_id = config.get("tuya_s06_id", "YOUR_INFRARED_GATEWAY_ID")
-            remote_id = config.get("tuya_ac_remote_id", "YOUR_AC_REMOTE_ID")
-            base_url = "https://openapi.tuyaeu.com"
+            cfg = load_config()
+            cid = cfg.get("tuya_cloud_client_id")
+            sec = cfg.get("tuya_cloud_secret")
+            infrared_id = cfg.get("tuya_cloud_infrared_id", cfg.get("tuya_s06_id"))
+            remote_id = cfg.get("tuya_cloud_remote_id", cfg.get("tuya_ac_remote_id"))
+            base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
+            
+            if not cid or not sec or not infrared_id or not remote_id:
+                log.warning("⚠️ Claus Tuya Cloud no configurades a config.json. No es pot enviar l'ordre.")
+                return
             
             # 1. Obtenir Token Tuya
             t_ms = str(int(time.time() * 1000))

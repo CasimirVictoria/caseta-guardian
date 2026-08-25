@@ -1,10 +1,9 @@
 {
-  "cerbo_ip": "192.168.1.100",
-  "portal_id": "c0619ab2xxxx",
-  "ntfy_topic": "your_private_ntfy_topic",
-  "tuya_s06_ip": "192.168.1.50",
-  "tuya_dev_id": "your_tuya_device_id",
-  "tuya_local_key": "your_tuya_local_key",
-  "latitude": 39.00,
-  "longitude": -0.30
+  "tuya_cloud_client_id": "YOUR_TUYA_CLIENT_ID",
+  "tuya_cloud_secret": "YOUR_TUYA_SECRET",
+  "tuya_cloud_infrared_id": "YOUR_INFRARED_GATEWAY_ID",
+  "tuya_cloud_remote_id": "YOUR_AC_REMOTE_ID",
+  "latitude": 39.0,
+  "longitude": -0.3,
+  "ntfy_topic": "your_ntfy_alerts_topic"
 }
