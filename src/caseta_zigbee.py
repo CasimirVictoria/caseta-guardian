@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
 Caseta Zigbee - Dimoni Natiu de Telemetria i Domòtica Zigbee en Memòria RAM
-100% Python Pur (sense Node.js ni Node-RED) per a Cerbo GX (Venus OS).
+Suport complet per a múltiples sensors (Termohigròmetre + Multisensor 4-en-1).
 
 Filosofia Zero Desgast de Disc:
 - Base de dades activa en RAM (tmpfs a /run/caseta-zigbee/zigbee.db).
-- Lectura inicial d'atributs històrics de la BD per sembrar la telemetria.
-- Publicació instantània de telemetria i estadístiques a FlashMQ (caseta/clima).
-- Resum diari compacte (1 sola línia JSON a les 23:59h a /data/caseta-guardian/history/historic_clima.jsonl).
+- Seguiment independent per sensor de temperatura, humitat, lux, presència i bateria.
+- Resum diari compacte (1 sola línia JSON a les 23:59h).
 """
 
 import asyncio
@@ -44,26 +43,53 @@ class ZigbeeManager:
         self.mqtt_client = None
         self.running = True
         self.last_saved_day = None
-        self.stats = {
-            "salo": {
+        self.sensors = {
+            "sensor_1": {
+                "nom": "Termohigròmetre TS0201",
+                "ieee": "a4:c1:38:8c:5b:70:28:4f",
+                "temperatura": None,
+                "humitat": None,
+                "bateria": None,
+                "t_max": -100.0, "t_max_hora": None,
+                "t_min": 100.0,  "t_min_hora": None,
+                "mostres_temp": [],
+                "h_max": 0.0,    "h_min": 100.0,
+                "ultima_actualitzacio": None
+            },
+            "sensor_2": {
+                "nom": "Multisensor 4-en-1 ZG-204ZV",
+                "ieee": "a4:c1:38:a6:3a:59:a0:35",
                 "temperatura": None,
                 "humitat": None,
                 "lux": None,
                 "presencia": False,
-                "bateria_temp": None,
-                "bateria_multi": None,
+                "bateria": None,
                 "t_max": -100.0, "t_max_hora": None,
                 "t_min": 100.0,  "t_min_hora": None,
                 "mostres_temp": [],
                 "h_max": 0.0,    "h_min": 100.0,
                 "lux_max": 0,    "lux_max_hora": None,
-                "minuts_presencia": 0,
                 "ultima_actualitzacio": None
             }
         }
 
+    def get_sensor_key(self, ieee_str):
+        for k, v in self.sensors.items():
+            if v["ieee"].lower() == ieee_str.lower():
+                return k
+        # Si és un dispositiu nou no registrat
+        new_key = f"sensor_{len(self.sensors) + 1}"
+        self.sensors[new_key] = {
+            "nom": f"Sensor Zigbee {ieee_str[-5:]}",
+            "ieee": ieee_str,
+            "temperatura": None, "humitat": None, "lux": None, "presencia": False, "bateria": None,
+            "t_max": -100.0, "t_max_hora": None, "t_min": 100.0, "t_min_hora": None,
+            "mostres_temp": [], "h_max": 0.0, "h_min": 100.0, "lux_max": 0, "lux_max_hora": None,
+            "ultima_actualitzacio": None
+        }
+        return new_key
+
     def setup_ram_database(self):
-        """Prepara la base de dades en memòria RAM (tmpfs) per protegir la Flash."""
         os.makedirs(RAM_RUN_DIR, exist_ok=True)
         os.makedirs(HISTORY_DIR, exist_ok=True)
         if os.path.exists(FLASH_DB_BACKUP) and not os.path.exists(RAM_DB_PATH):
@@ -79,45 +105,49 @@ class ZigbeeManager:
             except Exception as e:
                 log.error("Error migrant BD inicial a RAM: %s", e)
 
-        # Sembrem la telemetria amb les últimes dades conegudes
         self.seed_from_database()
 
     def seed_from_database(self):
-        """Llegeix l'últim estat dels sensors a la base de dades per no començar a cegues."""
         if not os.path.exists(RAM_DB_PATH):
             return
         try:
             conn = sqlite3.connect(RAM_DB_PATH)
             c = conn.cursor()
-            rows = c.execute("SELECT cluster_id, attr_id, value FROM attributes_cache_v15").fetchall()
-            salo = self.stats["salo"]
-            for cid, aid, val in rows:
+            rows = c.execute("SELECT ieee, cluster_id, attr_id, value FROM attributes_cache_v15").fetchall()
+            now_h = datetime.datetime.now().strftime("%H:%M")
+            now_full = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for ieee, cid, aid, val in rows:
+                if str(ieee) == "00:12:4b:00:30:db:ef:c5":
+                    continue
+                s_key = self.get_sensor_key(str(ieee))
+                s = self.sensors[s_key]
+                s["ultima_actualitzacio"] = now_full
                 if cid == 1026 and aid == 0:  # Temp
                     t = val / 100.0
-                    salo["temperatura"] = t
-                    salo["t_max"] = t
-                    salo["t_min"] = t
-                    salo["t_max_hora"] = datetime.datetime.now().strftime("%H:%M")
-                    salo["t_min_hora"] = datetime.datetime.now().strftime("%H:%M")
-                    salo["mostres_temp"].append(t)
+                    s["temperatura"] = t
+                    s["t_max"] = t
+                    s["t_min"] = t
+                    s["t_max_hora"] = now_h
+                    s["t_min_hora"] = now_h
+                    s["mostres_temp"].append(t)
                 elif cid == 1029 and aid == 0:  # Humitat
                     h = val / 100.0
-                    salo["humitat"] = h
-                    salo["h_max"] = h
-                    salo["h_min"] = h
+                    s["humitat"] = h
+                    s["h_max"] = h
+                    s["h_min"] = h
                 elif cid == 1024 and aid == 0:  # Lux
                     lux = round(math.pow(10, (val - 1) / 10000.0), 1) if val > 0 else 0
-                    salo["lux"] = lux
-                    salo["lux_max"] = lux
-                    salo["lux_max_hora"] = datetime.datetime.now().strftime("%H:%M")
+                    s["lux"] = lux
+                    s["lux_max"] = lux
+                    s["lux_max_hora"] = now_h
+                elif cid == 1 and aid in (32, 33):  # Bateria
+                    s["bateria"] = round(val / 2.0) if aid == 33 else val
             conn.close()
-            salo["ultima_actualitzacio"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log.info(f"Telemetria inicial sembrada de la BD: {salo['temperatura']} ºC, {salo['humitat']} %, {salo['lux']} Lux")
+            log.info("Telemetria inicial de 2 sensors sembrada amb èxit des de la BD!")
         except Exception as e:
             log.debug("No s'han pogut llegir atributs inicials: %s", e)
 
     def backup_to_flash(self):
-        """Guarda una còpia de la topologia de xarxa a Flash (només en emparellar)."""
         if os.path.exists(RAM_DB_PATH):
             try:
                 shutil.copy2(RAM_DB_PATH, FLASH_DB_BACKUP)
@@ -159,121 +189,109 @@ class ZigbeeManager:
     def publish_clima_telemetry(self):
         if not self.mqtt_client:
             return
-        salo = self.stats["salo"]
         payload = {
-            "temperatura": salo["temperatura"],
-            "humitat": salo["humitat"],
-            "lux": salo["lux"],
-            "presencia": salo["presencia"],
-            "bateria_temp": salo["bateria_temp"],
-            "bateria_multi": salo["bateria_multi"],
-            "t_max": salo["t_max"] if salo["t_max"] > -50 else None,
-            "t_max_hora": salo["t_max_hora"],
-            "t_min": salo["t_min"] if salo["t_min"] < 50 else None,
-            "t_min_hora": salo["t_min_hora"],
-            "t_avg": round(sum(salo["mostres_temp"]) / len(salo["mostres_temp"]), 2) if salo["mostres_temp"] else None,
-            "h_max": salo["h_max"],
-            "h_min": salo["h_min"],
-            "lux_max": salo["lux_max"],
-            "lux_max_hora": salo["lux_max_hora"],
-            "actualitzat": salo["ultima_actualitzacio"]
+            "sensors": self.sensors,
+            # Resum global saló
+            "temperatura": self.sensors["sensor_1"]["temperatura"] or self.sensors["sensor_2"]["temperatura"],
+            "humitat": self.sensors["sensor_1"]["humitat"] or self.sensors["sensor_2"]["humitat"],
+            "lux": self.sensors["sensor_2"]["lux"],
+            "presencia": self.sensors["sensor_2"]["presencia"],
+            "actualitzat": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         self.mqtt_client.publish("caseta/clima", json.dumps(payload), retain=True)
 
     def on_attribute_updated(self, cluster, attr_id, value):
-        salo = self.stats["salo"]
+        dev = getattr(getattr(cluster, "endpoint", None), "device", None)
+        ieee_str = str(getattr(dev, "ieee", ""))
+        s_key = self.get_sensor_key(ieee_str)
+        s = self.sensors[s_key]
+        
         ara = datetime.datetime.now()
         hora_str = ara.strftime("%H:%M")
-        salo["ultima_actualitzacio"] = ara.strftime("%Y-%m-%d %H:%M:%S")
+        s["ultima_actualitzacio"] = ara.strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. Mesura de Temperatura (0x0402)
+        # 1. Temperatura (0x0402)
         if cluster.cluster_id == 0x0402 and attr_id == 0:
             temp_c = round(value / 100.0, 2)
-            salo["temperatura"] = temp_c
-            salo["mostres_temp"].append(temp_c)
-            if len(salo["mostres_temp"]) > 1440:
-                salo["mostres_temp"].pop(0)
+            s["temperatura"] = temp_c
+            s["mostres_temp"].append(temp_c)
+            if len(s["mostres_temp"]) > 1440:
+                s["mostres_temp"].pop(0)
 
-            if temp_c > salo["t_max"]:
-                salo["t_max"] = temp_c
-                salo["t_max_hora"] = hora_str
-            if temp_c < salo["t_min"]:
-                salo["t_min"] = temp_c
-                salo["t_min_hora"] = hora_str
+            if temp_c > s["t_max"]:
+                s["t_max"] = temp_c
+                s["t_max_hora"] = hora_str
+            if temp_c < s["t_min"]:
+                s["t_min"] = temp_c
+                s["t_min_hora"] = hora_str
             self.publish_clima_telemetry()
 
-        # 2. Mesura d'Humitat Relativa (0x0405)
+        # 2. Humitat (0x0405)
         elif cluster.cluster_id == 0x0405 and attr_id == 0:
             hum_pct = round(value / 100.0, 1)
-            salo["humitat"] = hum_pct
-            if hum_pct > salo["h_max"]:
-                salo["h_max"] = hum_pct
-            if hum_pct < salo["h_min"]:
-                salo["h_min"] = hum_pct
+            s["humitat"] = hum_pct
+            if hum_pct > s["h_max"]:
+                s["h_max"] = hum_pct
+            if hum_pct < s["h_min"]:
+                s["h_min"] = hum_pct
             self.publish_clima_telemetry()
 
-        # 3. Mesura d'Il·luminació en Lux (0x0400)
+        # 3. Lux (0x0400)
         elif cluster.cluster_id == 0x0400 and attr_id == 0:
             lux = round(math.pow(10, (value - 1) / 10000.0), 1) if value > 0 else 0
-            salo["lux"] = lux
-            if lux > salo["lux_max"]:
-                salo["lux_max"] = lux
-                salo["lux_max_hora"] = hora_str
+            s["lux"] = lux
+            if lux > s.get("lux_max", 0):
+                s["lux_max"] = lux
+                s["lux_max_hora"] = hora_str
             self.publish_clima_telemetry()
 
-        # 4. Ocupació / Presència (0x0406 / 0x0500)
+        # 4. Presència (0x0406 / 0x0500)
         elif cluster.cluster_id in (0x0406, 0x0500) and attr_id in (0, 2):
-            salo["presencia"] = bool(value & 1)
+            s["presencia"] = bool(value & 1)
             self.publish_clima_telemetry()
 
-        # 5. Nivell de Pila / Bateria (0x0001)
+        # 5. Pila (0x0001)
         elif cluster.cluster_id == 0x0001 and attr_id == 0x0021:
-            batt_pct = round(value / 2.0)
-            if getattr(getattr(getattr(cluster, "endpoint", None), "device", None), "model", "") == "TS0201":
-                salo["bateria_temp"] = batt_pct
-            else:
-                salo["bateria_multi"] = batt_pct
+            s["bateria"] = round(value / 2.0)
             self.publish_clima_telemetry()
 
     def check_midnight_rollup(self):
-        """A les 23:59h, escriu una sola línia JSON resum al disc eMMC."""
         ara = datetime.datetime.now()
         dia_actual = ara.strftime("%Y-%m-%d")
         if ara.hour == 23 and ara.minute >= 58 and self.last_saved_day != dia_actual:
-            salo = self.stats["salo"]
-            if salo["temperatura"] is not None:
-                rollup = {
-                    "data": dia_actual,
-                    "t_min": salo["t_min"],
-                    "t_min_hora": salo["t_min_hora"],
-                    "t_max": salo["t_max"],
-                    "t_max_hora": salo["t_max_hora"],
-                    "t_avg": round(sum(salo["mostres_temp"]) / len(salo["mostres_temp"]), 2) if salo["mostres_temp"] else None,
-                    "h_min": salo["h_min"],
-                    "h_max": salo["h_max"],
-                    "lux_max": salo["lux_max"],
-                    "lux_max_hora": salo["lux_max_hora"]
-                }
-                try:
-                    with open(HISTORY_CLIMA_FILE, "a") as f:
-                        f.write(json.dumps(rollup) + "\n")
-                    log.info("💾 Resum diari de clima persistit amb èxit a Flash (%s)", dia_actual)
-                    self.last_saved_day = dia_actual
-                    
-                    # Reset per al nou dia
-                    salo["t_max"] = salo["temperatura"]
-                    salo["t_max_hora"] = ara.strftime("%H:%M")
-                    salo["t_min"] = salo["temperatura"]
-                    salo["t_min_hora"] = ara.strftime("%H:%M")
-                    salo["mostres_temp"] = [salo["temperatura"]]
-                except Exception as e:
-                    log.error("Error guardant resum diari de clima: %s", e)
+            rollup = {
+                "data": dia_actual,
+                "sensors": {}
+            }
+            for k, s in self.sensors.items():
+                if s["temperatura"] is not None:
+                    rollup["sensors"][k] = {
+                        "nom": s["nom"],
+                        "t_min": s["t_min"], "t_min_hora": s["t_min_hora"],
+                        "t_max": s["t_max"], "t_max_hora": s["t_max_hora"],
+                        "t_avg": round(sum(s["mostres_temp"]) / len(s["mostres_temp"]), 2) if s["mostres_temp"] else None,
+                        "h_min": s["h_min"], "h_max": s["h_max"],
+                        "lux_max": s.get("lux_max"), "lux_max_hora": s.get("lux_max_hora")
+                    }
+                    # Reset
+                    s["t_max"] = s["temperatura"]
+                    s["t_max_hora"] = ara.strftime("%H:%M")
+                    s["t_min"] = s["temperatura"]
+                    s["t_min_hora"] = ara.strftime("%H:%M")
+                    s["mostres_temp"] = [s["temperatura"]]
+            try:
+                with open(HISTORY_CLIMA_FILE, "a") as f:
+                    f.write(json.dumps(rollup) + "\n")
+                log.info("💾 Resum diari de clima (2 sensors) persistit a Flash (%s)", dia_actual)
+                self.last_saved_day = dia_actual
+            except Exception as e:
+                log.error("Error guardant resum diari de clima: %s", e)
 
     def on_device_joined(self, device):
-        log.info("🎉 Nou dispositiu detectat: %s (NWK: %s)", device.ieee, hex(device.nwk))
+        log.info(f"🎉 Nou dispositiu detectat: {device.ieee} (NWK: {hex(device.nwk)})")
 
     def on_device_initialized(self, device):
-        log.info("✅ Dispositiu emparellat i inicialitzat: %s (%s - %s)", device.ieee, device.manufacturer, device.model)
+        log.info(f"✅ Dispositiu emparellat i inicialitzat: {device.ieee} ({device.manufacturer} - {device.model})")
         self.backup_to_flash()
 
 class ListenerProxy:
@@ -302,7 +320,7 @@ async def main():
         "database_path": RAM_DB_PATH
     }
 
-    log.info("Iniciant xarxa Zigbee en memòria RAM (%s)...", RAM_DB_PATH)
+    log.info(f"Iniciant xarxa Zigbee en memòria RAM ({RAM_DB_PATH})...")
     app = await zigpy_znp.zigbee.application.ControllerApplication.new(
         config=config,
         auto_form=True,

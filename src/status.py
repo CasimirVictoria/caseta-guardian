@@ -111,7 +111,8 @@ def get_telemetry():
             elif "caseta/forecast" in msg.topic:
                 mqtt_forecast[0] = val
             elif "caseta/clima" in msg.topic:
-                mqtt_clima[0] = json.loads(msg.payload.decode())
+                raw_json = json.loads(msg.payload.decode())
+                mqtt_clima[0] = raw_json.get("value") if isinstance(raw_json, dict) and "value" in raw_json else raw_json
         except Exception:
             pass
 
@@ -339,29 +340,37 @@ def main():
         print(box_line(f"   • Índex de Risc de Tall:    {risk_color}{BOLD}{risk_label} ({risk}%){RESET}"))
         print(box_line(f"   • Objectiu Reserva Nocturna:  {BOLD}{target_soc}% de Bateria SAI{RESET}"))
 
-    if mqtt_clima and mqtt_clima.get("temperatura") is not None:
-        c_temp = mqtt_clima.get("temperatura")
-        c_hum = mqtt_clima.get("humitat")
-        c_tmax = mqtt_clima.get("t_max")
-        c_tmax_h = mqtt_clima.get("t_max_hora")
-        c_tmin = mqtt_clima.get("t_min")
-        c_tmin_h = mqtt_clima.get("t_min_hora")
-        c_lux = mqtt_clima.get("lux")
-        c_pres = mqtt_clima.get("presencia")
+    if mqtt_clima:
+        sensors_dict = mqtt_clima.get("sensors") or {}
+        s1 = sensors_dict.get("sensor_1") or {}
+        s2 = sensors_dict.get("sensor_2") or {}
 
-        temp_color = RED if c_temp >= 30 else (GREEN if c_temp <= 25 else YELLOW)
-        pres_str = f"{MAGENTA}{BOLD}🚶 Presència Detectada{RESET}" if c_pres else f"{GREEN}🟢 Zona Buida (Sense presència){RESET}"
-        
-        tmax_str = f"{c_tmax:.1f} ºC ({c_tmax_h}h)" if (c_tmax is not None and c_tmax_h) else "N/A"
-        tmin_str = f"{c_tmin:.1f} ºC ({c_tmin_h}h)" if (c_tmin is not None and c_tmin_h) else "N/A"
-        lux_str = f"{c_lux:.0f} Lux" if c_lux is not None else "N/A"
-        hum_str = f"{c_hum:.1f} %" if c_hum is not None else "N/A"
+        if s1.get("temperatura") is not None or s2.get("temperatura") is not None:
+            print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+            print(box_line(f"🌡️ {BOLD}CLIMA & BIOCLIMÀTICA (Zigbee Natiu en RAM - 2 Sensors){RESET}"))
+            
+            # Sensor 1: Termohigròmetre TS0201
+            if s1.get("temperatura") is not None:
+                t1 = s1.get("temperatura")
+                h1 = s1.get("humitat")
+                bat1 = s1.get("bateria")
+                tmax1 = f"{s1.get('t_max'):.1f} ºC ({s1.get('t_max_hora')}h)" if s1.get('t_max_hora') else "N/A"
+                tmin1 = f"{s1.get('t_min'):.1f} ºC ({s1.get('t_min_hora')}h)" if s1.get('t_min_hora') else "N/A"
+                bat_str1 = f"🔋 Pila: {bat1}%" if bat1 is not None else ""
+                print(box_line(f"   • {BOLD}Termohigròmetre (TS0201):{RESET}  {YELLOW}{BOLD}{t1:.2f} ºC{RESET} | {CYAN}{BOLD}{h1:.1f} %{RESET}  [{bat_str1}]"))
+                print(box_line(f"     └─ Pics d'Hui:  Màx {RED}{tmax1}{RESET} | Mín {BLUE}{tmin1}{RESET}"))
 
-        print("├" + "─" * (BOX_WIDTH + 2) + "┤")
-        print(box_line(f"🌡️ {BOLD}CLIMA & BIOCLIMÀTICA (Zigbee Natiu en RAM - Saló){RESET}"))
-        print(box_line(f"   • Temp. Saló / Humitat:     {temp_color}{BOLD}{c_temp:.2f} ºC{RESET}  |  {CYAN}{BOLD}{hum_str}{RESET}"))
-        print(box_line(f"   • Pic Màxim / Mínim d'Hui:  {RED}{tmax_str}{RESET}  |  {BLUE}{tmin_str}{RESET}"))
-        print(box_line(f"   • Il·luminació & Presència: {YELLOW}{BOLD}{lux_str}{RESET}  |  {pres_str}"))
+            # Sensor 2: Multisensor 4-en-1 ZG-204ZV
+            if s2.get("temperatura") is not None:
+                t2 = s2.get("temperatura")
+                h2 = s2.get("humitat")
+                lux2 = s2.get("lux")
+                pres2 = s2.get("presencia")
+                bat2 = s2.get("bateria")
+                pres_str = f"{MAGENTA}{BOLD}🚶 Presència{RESET}" if pres2 else f"{GREEN}🟢 Repòs{RESET}"
+                lux_str = f"{lux2:.0f} Lux" if lux2 is not None else "N/A"
+                bat_str2 = f"🔋 {bat2}%" if bat2 is not None else ""
+                print(box_line(f"   • {BOLD}Multisensor (ZG-204ZV):{RESET}   {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str} [{bat_str2}]"))
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     print(f"  Guardià Natiu (caseta-guardian): {GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}")
