@@ -144,41 +144,42 @@ Unlike conventional off-grid setups that cycle the battery deeply every single d
 ```bash
 $ caseta
 
-⚡ TAULER DE TELEMETRIA EN DIRECTE - SISTEMA VICTRON ESS ⚡
+⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡
 Connectant a Cerbo GX (192.168.1.106)...
+🕒 Registre en directe: 25/08/2026 - 16:25:09
 
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
-│    • Estat de Càrrega (SoC):  89.0%   [Carregant]                            │
-│    • Energia Disponible:      2.85 kWh actuals | 2.53 kWh útils (tall 10%)   │
-│    • Marge fins a Escut SAI:  0.77 kWh lliures (abans del sòl del 65%)       │
-│    • Tensió i Corrent:        50.10 V  |  +3.4 A (+170 W)                    │
-│    • Cel·les (Min / Màx):     3.337 V / 3.347 V (ΔV = 10 mV) 🎯              │
-│    • Temperatura BMS:         29.9 ºC                                        │
+│    • Estat de Càrrega (SoC):  88.0%  [Repòs / Balancejant]  (SoH BMS: 90%)   │
+│    • Energia Disponible:      2.81 kWh actuals | 2.49 kWh útils (tall 10%)   │
+│    • Marge fins a Escut SAI:  0.74 kWh lliures (abans del sòl del 65%)       │
+│    • Tensió i Corrent:        49.93 V  |  +0.3 A (+14 W)                     │
+│    • Cel·les (Min / Màx):     3.327 V / 3.330 V (ΔV = 3 mV)                  │
+│    • Temperatura BMS:         32.6 ºC                                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                      │
-│    • Producció Solar Huawei:  1055.2 W                                       │
-│    • Consum Casa (AC Loads):   911.4 W                                       │
-│    • Freqüència de CA Caseta: 50.08 Hz                                       │
+│ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                       │
+│    • Producció Solar Huawei:   757.4 W                                       │
+│    • Consum Casa (AC Loads):   759.5 W                                       │
+│    • Freqüència de CA Caseta: 49.95 Hz                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                    │
 │    • Mode MultiPlus:          ON (Connectat a Xarxa)                         │
-│    • Tensió Xarxa L1:         210.4 V                                        │
-│    • Estat de la Xarxa:       Important del carrer (924 W)                   │
+│    • Tensió Xarxa L1:         225.1 V                                        │
+│    • Estat de la Xarxa:       Important del carrer (58 W)                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 📊 BALANÇ I ENERGIA D'AVUI (Acumulats)                                       │
-│    • Producció Solar Generada:  6.90 kWh (Pic màxim: 1079 W)                 │
-│    • Consum Total de la Casa:  13.77 kWh (Cobertura Solar: 50.1%)            │
-│    • Importat de Xarxa:         6.78 kWh | Exportat: 0.00 kWh (Zero Regal)   │
-│    • Cost Total Facturat d'Hui:  0.73 € (Tarifa 2.0TD - Tot inclòs)          │
+│    • Producció Solar Generada:  5.92 kWh (Pic màxim: 1065 W)                 │
+│    • Consum Total de la Casa:   8.45 kWh (Cobertura Solar: 70.1%)            │
+│    • Importat de Xarxa:         3.22 kWh | Exportat: 0.01 kWh (Zero Regal)   │
+│    • Cost Total Facturat d'Hui:  0.48 € (Tarifa 2.0TD - Tot inclòs)          │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                            │
-│    • Sol Esperat (Hui / Demà): 7.5 kWh / 5.7 kWh                             │
-│    • Temp. Màx / Ocàs (21h):   32.3 ºC / 27.5 ºC                             │
-│    • Índex de Risc de Tall:    🟢 Risc Baix (Normal) (20%)                   │
+│    • Sol Esperat (Hui / Demà): 4.8 kWh / 7.8 kWh                             │
+│    • Temp. Màx / Ocàs (21h):   32.9 ºC / 30.6 ºC                             │
+│    • Índex de Risc de Tall:    🟡 Risc Mitjà (35%)                           │
 │    • Objectiu Reserva Nocturna:  85.0% de Bateria SAI                        │
 └──────────────────────────────────────────────────────────────────────────────┘
-  Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT (systemd)
+  Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT A CERBO GX (Venus OS)
 ```
 
 > **Note on Economic & Cost Tracking:** The real-time cost calculation is tailored to the installation's specific Spanish 2.0TD contract (*Imagina Energía* - 1.150 kW contracted power for P1/P3, real-time Time-of-Use rates for Off-peak/Mid-peak/Peak periods, meter rental fees, and energy taxes IEE 3.8% + IVA 10%). Parameters can be adapted in code or configuration.
