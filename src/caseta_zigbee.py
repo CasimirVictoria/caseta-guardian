@@ -371,6 +371,12 @@ class ZigbeeManager:
             except Exception as e:
                 log.error("Error guardant resum diari de clima: %s", e)
 
+    def attach_all_devices(self):
+        if not self.app:
+            return
+        for dev in self.app.devices.values():
+            self.attach_device_listeners(dev)
+
     def on_device_joined(self, device):
         log.info(f"🎉 Nou dispositiu detectat: {device.ieee} (NWK: {hex(device.nwk)})")
         self.attach_device_listeners(device)
@@ -404,6 +410,9 @@ class AppListener:
     def raw_device_initialized(self, device):
         self.mgr.on_device_initialized(device)
 
+    def device_initialized(self, device):
+        self.mgr.on_device_initialized(device)
+
 async def main():
     manager = ZigbeeManager()
     manager.setup_ram_database()
@@ -435,6 +444,7 @@ async def main():
     log.info("📡 Finestra d'emparellament (permit join) oberta automàticament per 250 segons!")
 
     while manager.running:
+        manager.attach_all_devices()
         manager.check_midnight_rollup()
         await asyncio.sleep(10)
 
