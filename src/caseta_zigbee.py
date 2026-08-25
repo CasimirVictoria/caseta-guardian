@@ -5,8 +5,8 @@ Suport complet per a múltiples sensors (Termohigròmetre + Multisensor 4-en-1).
 
 Filosofia Zero Desgast de Disc:
 - Base de dades activa en RAM (tmpfs a /run/caseta-zigbee/zigbee.db).
-- Descodificació intel·ligent d'unitats de temperatura, humitat, lux i bateria.
-- Resum diari compacte (1 sola línia JSON a les 23:59h).
+- Captura completa d'atributs ZCL estàndard, ordres IAS Zone (presència) i Tuya DP.
+- Auto-vinculació de nous dispositius en calent.
 """
 
 import asyncio
@@ -40,6 +40,7 @@ MQTT_PORT = 1883
 class ZigbeeManager:
     def __init__(self):
         self.app = None
+        self.listener = None
         self.mqtt_client = None
         self.running = True
         self.last_saved_day = None
@@ -83,7 +84,7 @@ class ZigbeeManager:
             "ieee": ieee_str,
             "temperatura": None, "humitat": None, "lux": None, "presencia": False, "bateria": None,
             "t_max": -100.0, "t_max_hora": None, "t_min": 100.0, "t_min_hora": None,
-            "mostres_temp": [], "h_max": 0.0, "h_min": 100.0, "lux_max": 0, "lux_max_hora": None,
+            "temp_sum": 0.0, "temp_count": 0, "h_max": 0.0, "h_min": 100.0, "lux_max": 0, "lux_max_hora": None,
             "ultima_actualitzacio": None
         }
         return new_key
@@ -145,19 +146,14 @@ class ZigbeeManager:
         self.mqtt_client.publish("caseta/clima", json.dumps(payload), retain=True)
 
     def parse_temperature(self, raw_val):
-        """Converteix el valor cru de temperatura a graus Celsius vàlids."""
         try:
             val = float(raw_val)
-            # Valor típic estàndard Zigbee: 3130 -> 31.3 ºC
             if val > 500:
                 t = val / 100.0
-            # Valor en dècimes: 288 -> 28.8 ºC
             elif val > 60:
                 t = val / 10.0
-            # Valor directe: 28 -> 28.0 ºC
             elif 5 <= val <= 55:
                 t = val
-            # Protecció contra bateries colades com a temperatura (ex: 26 decivolts = 0.26 ºC)
             elif val < 5:
                 return None
             else:
@@ -186,6 +182,49 @@ class ZigbeeManager:
         except Exception:
             return 0.0
 
+    def attach_device_listeners(self, dev):
+        if not dev or not self.listener:
+            return
+        try:
+            dev.add_listener(self.listener)
+            for ep in dev.endpoints.values():
+                if hasattr(ep, "in_clusters"):
+                    for cl in ep.in_clusters.values():
+                        cl.add_listener(self.listener)
+                if hasattr(ep, "out_clusters"):
+                    for cl in ep.out_clusters.values():
+                        cl.add_listener(self.listener)
+            log.info(f"Listeners vinculats al dispositiu {dev.ieee} ({dev.model})")
+        except Exception as e:
+            log.debug("Error vinculant listeners: %s", e)
+
+    def on_cluster_command(self, cluster, tsn, command_id, args):
+        dev = getattr(getattr(cluster, "endpoint", None), "device", None)
+        ieee_str = str(getattr(dev, "ieee", ""))
+        s_key = self.get_sensor_key(ieee_str)
+        s = self.sensors[s_key]
+        
+        ara = datetime.datetime.now()
+        s["ultima_actualitzacio"] = ara.strftime("%Y-%m-%d %H:%M:%S")
+
+        # IAS Zone (0x0500) - Zone Status Change Notification (command_id == 0)
+        if cluster.cluster_id == 0x0500:
+            try:
+                # args: (zone_status, extended_status, zone_id, delay)
+                status = args[0] if len(args) > 0 else 0
+                is_presence = bool(status & 1)
+                s["presencia"] = is_presence
+                log.info(f"🚶 Canvi d'estat de presència ({s['nom']}): {'🚶 DETECTADA' if is_presence else '🟢 REPOS'}")
+                self.publish_clima_telemetry()
+            except Exception as e:
+                log.debug("Error descodificant IAS Zone command: %s", e)
+
+        # Tuya Private Cluster (0xEF00)
+        elif cluster.cluster_id == 0xEF00:
+            log.info(f"📡 Paquet Tuya DP rebut de {s['nom']}: cmd={command_id}, args={args}")
+            # Si ve un paquet Tuya, sovint desperta el sensor i actualitza
+            self.publish_clima_telemetry()
+
     def on_attribute_updated(self, cluster, attr_id, value):
         dev = getattr(getattr(cluster, "endpoint", None), "device", None)
         ieee_str = str(getattr(dev, "ieee", ""))
@@ -210,6 +249,7 @@ class ZigbeeManager:
                 if temp_c < s["t_min"]:
                     s["t_min"] = temp_c
                     s["t_min_hora"] = hora_str
+                log.info(f"🌡️ Nova temperatura ({s['nom']}): {temp_c} ºC")
                 self.publish_clima_telemetry()
 
         # 2. Mesura d'Humitat Relativa (0x0405)
@@ -221,6 +261,7 @@ class ZigbeeManager:
                     s["h_max"] = hum_pct
                 if hum_pct < s["h_min"]:
                     s["h_min"] = hum_pct
+                log.info(f"💧 Nova humitat ({s['nom']}): {hum_pct} %")
                 self.publish_clima_telemetry()
 
         # 3. Mesura d'Il·luminació (0x0400)
@@ -230,19 +271,21 @@ class ZigbeeManager:
             if lux > s.get("lux_max", 0):
                 s["lux_max"] = lux
                 s["lux_max_hora"] = hora_str
+            log.info(f"☀️ Nova il·luminació ({s['nom']}): {lux} Lux (cru: {value})")
             self.publish_clima_telemetry()
 
         # 4. Presència / Moviment (0x0406 / 0x0500)
         elif cluster.cluster_id in (0x0406, 0x0500) and attr_id in (0, 2):
             s["presencia"] = bool(value & 1)
+            log.info(f"🚶 Presència per atribut ({s['nom']}): {s['presencia']}")
             self.publish_clima_telemetry()
 
         # 5. Nivell de Pila / Bateria (0x0001)
         elif cluster.cluster_id == 0x0001:
-            if attr_id == 0x0021:  # Battery percentage (0-200, dividit per 2)
+            if attr_id == 0x0021:  # Battery percentage
                 s["bateria"] = round(value / 2.0)
                 self.publish_clima_telemetry()
-            elif attr_id == 0x0020: # Voltage in decivolts (ex: 26 -> 2.6V)
+            elif attr_id == 0x0020: # Voltage in decivolts
                 volt = value / 10.0
                 pct = max(0, min(100, round((volt - 2.0) / 1.0 * 100)))
                 if s["bateria"] is None:
@@ -268,7 +311,6 @@ class ZigbeeManager:
                         "h_min": s["h_min"], "h_max": s["h_max"],
                         "lux_max": s.get("lux_max"), "lux_max_hora": s.get("lux_max_hora")
                     }
-                    # Reset diari
                     s["t_max"] = s["temperatura"]
                     s["t_max_hora"] = ara.strftime("%H:%M")
                     s["t_min"] = s["temperatura"]
@@ -285,9 +327,11 @@ class ZigbeeManager:
 
     def on_device_joined(self, device):
         log.info(f"🎉 Nou dispositiu detectat: {device.ieee} (NWK: {hex(device.nwk)})")
+        self.attach_device_listeners(device)
 
     def on_device_initialized(self, device):
         log.info(f"✅ Dispositiu emparellat i inicialitzat: {device.ieee} ({device.manufacturer} - {device.model})")
+        self.attach_device_listeners(device)
         self.backup_to_flash()
 
 class ListenerProxy:
@@ -302,6 +346,9 @@ class ListenerProxy:
 
     def attribute_updated(self, cluster, attr_id, value):
         self.mgr.on_attribute_updated(cluster, attr_id, value)
+
+    def cluster_command(self, cluster, tsn, command_id, args):
+        self.mgr.on_cluster_command(cluster, tsn, command_id, args)
 
 async def main():
     manager = ZigbeeManager()
@@ -324,16 +371,13 @@ async def main():
     )
     manager.app = app
     listener = ListenerProxy(manager)
+    manager.listener = listener
     app.add_listener(listener)
 
     for dev in app.devices.values():
-        dev.add_listener(listener)
-        for ep in dev.endpoints.values():
-            if hasattr(ep, "in_clusters"):
-                for cl in ep.in_clusters.values():
-                    cl.add_listener(listener)
+        manager.attach_device_listeners(dev)
 
-    # Inicialitzem els sensors coneguts si ja tenen atributs
+    # Inicialitzem els sensors coneguts si ja tenen atributs a la BD
     for dev in app.devices.values():
         ieee_str = str(dev.ieee)
         if ieee_str == "00:12:4b:00:30:db:ef:c5":
@@ -341,10 +385,8 @@ async def main():
         s_key = manager.get_sensor_key(ieee_str)
         s = manager.sensors[s_key]
         for ep in dev.endpoints.values():
-            # Temp
             if 0x0402 in getattr(ep, "in_clusters", {}):
-                cl = ep.in_clusters[0x0402]
-                raw_t = cl.get(0)
+                raw_t = ep.in_clusters[0x0402].get(0)
                 if raw_t is not None:
                     t = manager.parse_temperature(raw_t)
                     if t is not None:
@@ -353,18 +395,14 @@ async def main():
                         s["t_min"] = t
                         s["t_max_hora"] = datetime.datetime.now().strftime("%H:%M")
                         s["t_min_hora"] = datetime.datetime.now().strftime("%H:%M")
-            # Hum
             if 0x0405 in getattr(ep, "in_clusters", {}):
-                cl = ep.in_clusters[0x0405]
-                raw_h = cl.get(0)
+                raw_h = ep.in_clusters[0x0405].get(0)
                 if raw_h is not None:
                     h = manager.parse_humidity(raw_h)
                     if h is not None:
                         s["humitat"] = h
-            # Lux
             if 0x0400 in getattr(ep, "in_clusters", {}):
-                cl = ep.in_clusters[0x0400]
-                raw_l = cl.get(0)
+                raw_l = ep.in_clusters[0x0400].get(0)
                 if raw_l is not None:
                     s["lux"] = manager.parse_lux(raw_l)
 
