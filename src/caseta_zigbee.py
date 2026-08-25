@@ -92,6 +92,48 @@ class ZigbeeManager:
     def setup_ram_database(self):
         os.makedirs(RAM_RUN_DIR, exist_ok=True)
         os.makedirs(HISTORY_DIR, exist_ok=True)
+        self.seed_from_database()
+
+    def seed_from_database(self):
+        if not os.path.exists(RAM_DB_PATH):
+            return
+        try:
+            conn = sqlite3.connect(RAM_DB_PATH)
+            c = conn.cursor()
+            rows = c.execute("SELECT ieee, cluster_id, attr_id, value FROM attributes_cache_v15").fetchall()
+            now_h = datetime.datetime.now().strftime("%H:%M")
+            now_full = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for ieee, cid, aid, val in rows:
+                if str(ieee) == "00:12:4b:00:30:db:ef:c5":
+                    continue
+                s_key = self.get_sensor_key(str(ieee))
+                s = self.sensors[s_key]
+                s["ultima_actualitzacio"] = now_full
+                if cid == 1026 and aid == 0:  # Temp
+                    t = self.parse_temperature(val)
+                    if t is not None:
+                        s["temperatura"] = t
+                        s["t_max"] = t
+                        s["t_min"] = t
+                        s["t_max_hora"] = now_h
+                        s["t_min_hora"] = now_h
+                        s["temp_sum"] = t
+                        s["temp_count"] = 1
+                elif cid == 1029 and aid == 0:  # Humitat
+                    h = self.parse_humidity(val)
+                    if h is not None:
+                        s["humitat"] = h
+                        s["h_max"] = h
+                        s["h_min"] = h
+                elif cid == 1024 and aid == 0:  # Lux
+                    s["lux"] = self.parse_lux(val)
+                elif cid == 1 and aid in (32, 33):  # Bateria
+                    if aid == 33:
+                        s["bateria"] = round(val / 2.0)
+            conn.close()
+            log.info("Telemetria inicial sembrada des de la BD SQLite de la RAM!")
+        except Exception as e:
+            log.debug("No s'han pogut llegir atributs inicials: %s", e)
 
     def backup_to_flash(self):
         if os.path.exists(RAM_DB_PATH):

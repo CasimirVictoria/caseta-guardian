@@ -127,15 +127,19 @@ def get_telemetry():
         return {}, None, None, None, None
 
     client.loop_start()
-    for _ in range(35):
+    start = time.time()
+    while time.time() - start < 0.8:
+        time.sleep(0.02)
         portal = found_portal[0]
         if (
-            f"N/{portal}/battery/512/Soc" in data
+            portal
+            and f"N/{portal}/battery/512/Soc" in data
             and f"N/{portal}/system/0/Ac/Consumption/L1/Power" in data
-            and f"N/{portal}/vebus/276/Mode" in data
+            and mqtt_stats[0] is not None
+            and mqtt_forecast[0] is not None
+            and mqtt_clima[0] is not None
         ):
             break
-        time.sleep(0.02)
         
     client.loop_stop()
     client.disconnect()
