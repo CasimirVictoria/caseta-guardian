@@ -18,8 +18,14 @@ import os
 import shutil
 import sqlite3
 import sys
+import zoneinfo
 import paho.mqtt.client as mqtt
 import zigpy_znp.zigbee.application
+
+TZ_MADRID = zoneinfo.ZoneInfo("Europe/Madrid")
+
+def now_madrid():
+    return datetime.datetime.now(TZ_MADRID)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,8 +107,8 @@ class ZigbeeManager:
             conn = sqlite3.connect(RAM_DB_PATH)
             c = conn.cursor()
             rows = c.execute("SELECT ieee, cluster_id, attr_id, value FROM attributes_cache_v15").fetchall()
-            now_h = datetime.datetime.now().strftime("%H:%M")
-            now_full = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_h = now_madrid().strftime("%H:%M")
+            now_full = now_madrid().strftime("%Y-%m-%d %H:%M:%S")
             for ieee, cid, aid, val in rows:
                 if str(ieee) == "00:12:4b:00:30:db:ef:c5":
                     continue
@@ -183,7 +189,7 @@ class ZigbeeManager:
             "humitat": self.sensors["sensor_2"]["humitat"] or self.sensors["sensor_1"]["humitat"],
             "lux": self.sensors["sensor_2"]["lux"],
             "presencia": self.sensors["sensor_2"]["presencia"],
-            "actualitzat": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "actualitzat": now_madrid().strftime("%Y-%m-%d %H:%M:%S")
         }
         self.mqtt_client.publish("caseta/clima", json.dumps(payload), retain=True)
 
@@ -246,13 +252,12 @@ class ZigbeeManager:
         s_key = self.get_sensor_key(ieee_str)
         s = self.sensors[s_key]
         
-        ara = datetime.datetime.now()
+        ara = now_madrid()
         s["ultima_actualitzacio"] = ara.strftime("%Y-%m-%d %H:%M:%S")
 
         # IAS Zone (0x0500) - Zone Status Change Notification (command_id == 0)
         if cluster.cluster_id == 0x0500:
             try:
-                # args: (zone_status, extended_status, zone_id, delay)
                 status = args[0] if len(args) > 0 else 0
                 is_presence = bool(status & 1)
                 s["presencia"] = is_presence
@@ -264,7 +269,6 @@ class ZigbeeManager:
         # Tuya Private Cluster (0xEF00)
         elif cluster.cluster_id == 0xEF00:
             log.info(f"📡 Paquet Tuya DP rebut de {s['nom']}: cmd={command_id}, args={args}")
-            # Si ve un paquet Tuya, sovint desperta el sensor i actualitza
             self.publish_clima_telemetry()
 
     def on_attribute_updated(self, cluster, attr_id, value):
@@ -273,7 +277,7 @@ class ZigbeeManager:
         s_key = self.get_sensor_key(ieee_str)
         s = self.sensors[s_key]
         
-        ara = datetime.datetime.now()
+        ara = now_madrid()
         hora_str = ara.strftime("%H:%M")
         s["ultima_actualitzacio"] = ara.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -335,7 +339,7 @@ class ZigbeeManager:
                 self.publish_clima_telemetry()
 
     def check_midnight_rollup(self):
-        ara = datetime.datetime.now()
+        ara = now_madrid()
         dia_actual = ara.strftime("%Y-%m-%d")
         if ara.hour == 23 and ara.minute >= 58 and self.last_saved_day != dia_actual:
             rollup = {
@@ -435,8 +439,8 @@ async def main():
                         s["temperatura"] = t
                         s["t_max"] = t
                         s["t_min"] = t
-                        s["t_max_hora"] = datetime.datetime.now().strftime("%H:%M")
-                        s["t_min_hora"] = datetime.datetime.now().strftime("%H:%M")
+                        s["t_max_hora"] = now_madrid().strftime("%H:%M")
+                        s["t_min_hora"] = now_madrid().strftime("%H:%M")
             if 0x0405 in getattr(ep, "in_clusters", {}):
                 raw_h = ep.in_clusters[0x0405].get(0)
                 if raw_h is not None:
