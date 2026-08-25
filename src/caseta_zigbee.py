@@ -52,7 +52,7 @@ class ZigbeeManager:
                 "bateria": None,
                 "t_max": -100.0, "t_max_hora": None,
                 "t_min": 100.0,  "t_min_hora": None,
-                "mostres_temp": [],
+                "temp_sum": 0.0, "temp_count": 0,
                 "h_max": 0.0,    "h_min": 100.0,
                 "ultima_actualitzacio": None
             },
@@ -66,7 +66,7 @@ class ZigbeeManager:
                 "bateria": None,
                 "t_max": -100.0, "t_max_hora": None,
                 "t_min": 100.0,  "t_min_hora": None,
-                "mostres_temp": [],
+                "temp_sum": 0.0, "temp_count": 0,
                 "h_max": 0.0,    "h_min": 100.0,
                 "lux_max": 0,    "lux_max_hora": None,
                 "ultima_actualitzacio": None
@@ -201,9 +201,8 @@ class ZigbeeManager:
             temp_c = self.parse_temperature(value)
             if temp_c is not None:
                 s["temperatura"] = temp_c
-                s["mostres_temp"].append(temp_c)
-                if len(s["mostres_temp"]) > 1440:
-                    s["mostres_temp"].pop(0)
+                s["temp_sum"] += temp_c
+                s["temp_count"] += 1
 
                 if temp_c > s["t_max"]:
                     s["t_max"] = temp_c
@@ -244,7 +243,6 @@ class ZigbeeManager:
                 s["bateria"] = round(value / 2.0)
                 self.publish_clima_telemetry()
             elif attr_id == 0x0020: # Voltage in decivolts (ex: 26 -> 2.6V)
-                # Calculem percentatge aproximat per a bateries CR2032/CR2450 (2.0V - 3.0V)
                 volt = value / 10.0
                 pct = max(0, min(100, round((volt - 2.0) / 1.0 * 100)))
                 if s["bateria"] is None:
@@ -261,19 +259,22 @@ class ZigbeeManager:
             }
             for k, s in self.sensors.items():
                 if s["temperatura"] is not None:
+                    avg_t = round(s["temp_sum"] / s["temp_count"], 2) if s["temp_count"] > 0 else s["temperatura"]
                     rollup["sensors"][k] = {
                         "nom": s["nom"],
                         "t_min": s["t_min"], "t_min_hora": s["t_min_hora"],
                         "t_max": s["t_max"], "t_max_hora": s["t_max_hora"],
-                        "t_avg": round(sum(s["mostres_temp"]) / len(s["mostres_temp"]), 2) if s["mostres_temp"] else None,
+                        "t_avg": avg_t,
                         "h_min": s["h_min"], "h_max": s["h_max"],
                         "lux_max": s.get("lux_max"), "lux_max_hora": s.get("lux_max_hora")
                     }
+                    # Reset diari
                     s["t_max"] = s["temperatura"]
                     s["t_max_hora"] = ara.strftime("%H:%M")
                     s["t_min"] = s["temperatura"]
                     s["t_min_hora"] = ara.strftime("%H:%M")
-                    s["mostres_temp"] = [s["temperatura"]]
+                    s["temp_sum"] = s["temperatura"]
+                    s["temp_count"] = 1
             try:
                 with open(HISTORY_CLIMA_FILE, "a") as f:
                     f.write(json.dumps(rollup) + "\n")
