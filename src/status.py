@@ -91,6 +91,7 @@ def get_telemetry():
     mqtt_forecast = [None]
     mqtt_clima = [None]
     mqtt_inforatge = [None]
+    mqtt_ac = [None]
 
     def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("N/+/battery/512/#")
@@ -113,6 +114,8 @@ def get_telemetry():
                 mqtt_forecast[0] = val
             elif "caseta/inforatge" in msg.topic:
                 mqtt_inforatge[0] = val
+            elif "caseta/ac" in msg.topic:
+                mqtt_ac[0] = val
             elif "caseta/clima" in msg.topic:
                 raw_json = json.loads(msg.payload.decode())
                 mqtt_clima[0] = raw_json.get("value") if isinstance(raw_json, dict) and "value" in raw_json else raw_json
@@ -127,7 +130,7 @@ def get_telemetry():
         client.connect(CERBO_IP, 1883, 2)
     except Exception as e:
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
-        return {}, None, None, None, None, None
+        return {}, None, None, None, None, None, None
 
     client.loop_start()
     start = time.time()
@@ -146,7 +149,7 @@ def get_telemetry():
         
     client.loop_stop()
     client.disconnect()
-    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0], mqtt_inforatge[0]
+    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0], mqtt_inforatge[0], mqtt_ac[0]
 
 def get_forecast(mqtt_forecast=None):
     if mqtt_forecast:
@@ -235,7 +238,7 @@ def main():
     now_ts = datetime.datetime.now().strftime("%d/%m/%Y - %H:%M:%S")
     print(f"{DIM}🕒 Registre en directe: {now_ts}{RESET}\n")
     
-    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima, mqtt_inforatge = get_telemetry()
+    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima, mqtt_inforatge, mqtt_ac = get_telemetry()
     if not data or not portal:
         print(f"{RED}No s'han pogut obtenir dades del Cerbo GX.{RESET}\n")
         return
@@ -394,6 +397,17 @@ def main():
             lux_str = f"{lux2:.0f} Lux" if lux2 is not None else "0 Lux"
             bat_str2 = f"  [{GREEN}🔋 {bat2}%{RESET}]" if bat2 is not None else ""
             print(box_line(f"   • {BOLD}Saló (Multisensor):{RESET}    {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str}{bat_str2}"))
+
+        # Climatització AC (Mitsubishi Electric / Tuya S06)
+        if mqtt_ac and mqtt_ac.get("power") is not None:
+            ac_power = mqtt_ac.get("power")
+            ac_temp = mqtt_ac.get("temp", 26)
+            ac_mode = mqtt_ac.get("mode", "Fred")
+            if ac_power == 1:
+                ac_str = f"{CYAN}❄️ Mode {ac_mode} a {BOLD}{ac_temp} ºC{RESET} [{GREEN}Encès{RESET}]"
+            else:
+                ac_str = f"{DIM}⚪ Apagat / En Repòs{RESET}"
+            print(box_line(f"   • {BOLD}Climatització AC:{RESET}      {ac_str}"))
 
         # Inforatge Ador
         if mqtt_inforatge and mqtt_inforatge.get("temperatura") is not None:
