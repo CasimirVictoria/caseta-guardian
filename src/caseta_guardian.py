@@ -592,7 +592,7 @@ class CasetaGuardian:
         now = time.time()
         
         # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Esglaó 1: Bateria <50%)
-        if self.soc < 50.0:
+        if 0 < self.soc < 50.0:
             if self.ac_current_power != 0:
                 self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI Esglaó 1: Bateria <50% -> Apagat de l'AC")
                 self.send_notification("❄️ Escut SAI Esglaó 1", "Bateria <50%! S'ha apagat l'AC automàticament per protegir la reserva nocturna!", "default", "snowflake")
