@@ -468,6 +468,44 @@ class CasetaGuardian:
         except Exception:
             pass
 
+    def send_termo_tuya_command(self, power: bool = False, reason: str = ""):
+        """Envia ordre d'encesa/apagada a l'endoll intel·ligent del Termo Elèctric via Tuya Cloud OpenAPI."""
+        try:
+            cfg = load_config()
+            cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
+            sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
+            deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
+            base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
+
+            t_ms = str(int(time.time() * 1000))
+            url_path_token = "/v1.0/token?grant_type=1"
+            content_hash = hashlib.sha256(b"").hexdigest()
+            sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
+            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
+                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+            })
+            with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
+                token = json.loads(rep_tok.read().decode())["result"]["access_token"]
+
+            path_cmd = f"/v1.0/devices/{deviceId}/commands"
+            body_dict = {"commands": [{"code": "switch_1", "value": power}]}
+            body_str = json.dumps(body_dict)
+            c_hash = hashlib.sha256(body_str.encode()).hexdigest()
+            sign_str_cmd = f"{cid}{token}{t_ms}POST\n{c_hash}\n\n{path_cmd}"
+            sign_cmd = hmac.new(sec.encode(), sign_str_cmd.encode(), hashlib.sha256).hexdigest().upper()
+
+            req_cmd = urllib.request.Request(f"{base_url}{path_cmd}", data=body_str.encode(), headers={
+                "client_id": cid, "access_token": token, "sign": sign_cmd, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+            }, method="POST")
+            with urllib.request.urlopen(req_cmd, timeout=5) as rep:
+                res = json.loads(rep.read().decode())
+                log.info(f"♨️ [TERMO AUTÒNOM] Termo Power {'ON' if power else 'OFF'} ({reason}): {res}")
+                return res
+        except Exception as e:
+            log.warning(f"Error enviant comanda Termo Tuya: {e}")
+            return False
+
     def send_ac_tuya_command(self, power=1, temp=26, mode=0, fan=0, reason=""):
         """Envia ordres d'infrarojos al Mitsubishi Electric mitjançant Tuya Cloud OpenAPI i publica a MQTT."""
         now = time.time()
@@ -553,11 +591,11 @@ class CasetaGuardian:
         """Avalua les 4 Lleis de Climatització Intel·ligent de la Caseta."""
         now = time.time()
         
-        # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Prioritat Màxima)
-        if self.vebus_mode == 2 and self.soc < 65.0:
+        # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Esglaó 1: Bateria <50%)
+        if self.soc < 50.0:
             if self.ac_current_power != 0:
-                self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI: Mode aïllat i bateria <65%")
-                self.send_notification("🚨 Escut SAI Activat", "S'ha apagat l'AC automàticament per protegir la reserva de seguretat de la bateria!", "high", "snowflake")
+                self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI Esglaó 1: Bateria <50% -> Apagat de l'AC")
+                self.send_notification("❄️ Escut SAI Esglaó 1", "Bateria <50%! S'ha apagat l'AC automàticament per protegir la reserva nocturna!", "default", "snowflake")
             return
 
         # ⚙️ LLEI 4: Protecció del Compressor i Anti-Flapping (mínim 10 minuts)
@@ -827,8 +865,19 @@ class CasetaGuardian:
     def evaluate_state_machine(self):
         now = time.time()
 
-        if 0 < self.soc < 65.0 and not self.tuya_ac_turned_off_today:
-            self.trigger_tuya_ac_off()
+        # 🚨 ESGGLO 1 (SoC < 50%): Apagat preventiu de l'Aire Condicionat
+        if 0 < self.soc < 50.0 and self.ac_current_power != 0:
+            self.send_ac_tuya_command(power=0, reason="❄️ Escut SAI Esglaó 1: Bateria <50% -> Apagat de l'AC")
+
+        # 🚨 ESGGLO 2 (SoC < 45%): Tall Crític de Càrregues Grans (AC + Termo) per blindar 18h de SAI
+        if 0 < self.soc < 45.0:
+            if self.ac_current_power != 0:
+                self.send_ac_tuya_command(power=0, reason="🚨 Blindatge Total: Bateria <45% -> AC forçat a OFF")
+            termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
+            if termo_on and not getattr(self, "termo_cut_off_today", False):
+                self.send_termo_tuya_command(power=False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Termo")
+                self.send_notification("🚨 Blindatge Total SAI", "Bateria <45%! S'ha desconnectat el termo i l'AC per blindar 18h de reserva a la nevera i router!", "high", "zap")
+                self.termo_cut_off_today = True
 
         if self.vebus_mode != 2 and self.grid_v < 190.0:
             if self.low_voltage_start_time is None:
