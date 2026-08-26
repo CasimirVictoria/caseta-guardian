@@ -520,15 +520,19 @@ class CasetaGuardian:
             return
 
         # Horari Diürn (08:00 - 22:59h)
-        time_since_presence = now - self.last_presence_seen_time
-        if time_since_presence > 1800:
-            # 🟢 Repòs >30 minuts sense presència i sense excedent: Eco 28ºC per estalvi
-            if self.ac_current_power != 1 or self.ac_current_temp != 28:
-                self.send_ac_tuya_command(power=1, temp=28, mode=0, reason="🟢 Repòs >30 min sense ningú (Mode Eco 28ºC)")
-        else:
-            # 🚶 Presència activa / Família a casa: Confort 26ºC
+        # Si la bateria està per sobre del 69%, mantenim SEMPRE el confort base a 26ºC sense fluctuacions
+        if self.soc >= 69.0:
             if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🚶 Presència activa al saló (Confort 26ºC)")
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🏰 Confort Estable a 26ºC (SoC >= 69%)")
+        else:
+            # Si la bateria baixa del 69% I fa >30 minuts que no hi ha ningú: Mode Eco 28ºC per protegir la bateria
+            time_since_presence = now - self.last_presence_seen_time
+            if time_since_presence > 1800:
+                if self.ac_current_power != 1 or self.ac_current_temp != 28:
+                    self.send_ac_tuya_command(power=1, temp=28, mode=0, reason="🟢 Repòs >30 min i Bateria <69% (Mode Eco 28ºC)")
+            else:
+                if self.ac_current_power != 1 or self.ac_current_temp != 26:
+                    self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🚶 Presència activa (Confort 26ºC)")
 
     def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
