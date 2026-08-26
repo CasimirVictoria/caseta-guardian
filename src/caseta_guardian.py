@@ -408,7 +408,7 @@ class CasetaGuardian:
         except Exception as e:
             log.warning(f"Error consultant Inforatge Ador: {e}")
 
-    def send_ac_tuya_command(self, power=1, temp=26, mode=0, reason=""):
+    def send_ac_tuya_command(self, power=1, temp=26, mode=0, fan=0, reason=""):
         """Envia ordres d'infrarojos al Mitsubishi Electric mitjançant Tuya Cloud OpenAPI i publica a MQTT."""
         now = time.time()
         self.last_ac_command_time = now
