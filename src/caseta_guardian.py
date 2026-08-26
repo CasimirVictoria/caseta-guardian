@@ -591,7 +591,7 @@ class CasetaGuardian:
             if delta_mv > self.max_cell_delta_today:
                 self.max_cell_delta_today = delta_mv
 
-        # Publicació MQTT cada 10 segons (100% en RAM, ZERO accés a disc Flash)
+        # Publicació MQTT i memòria RAM cada 10 segons (ZERO desgast Flash)
         if now - self.last_stats_publish_time >= 10.0:
             self.last_stats_publish_time = now
             cov_pct = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
@@ -614,6 +614,12 @@ class CasetaGuardian:
                 "soh_bms": round(self.soh, 0),
                 "timestamp": now
             }
+            try:
+                with open("/tmp/caseta_daily_stats.json", "w") as f:
+                    json.dump(stats, f)
+            except Exception:
+                pass
+
             try:
                 if self.client:
                     if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
