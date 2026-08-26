@@ -276,20 +276,20 @@ def main():
         return
 
     # Càlculs de seguretat i energia
-    kwh_actuals = (soc / 100.0) * USABLE_CAPACITY_KWH
-    kwh_utils = max(0.0, ((soc - HARD_CUTOFF_SOC) / 100.0) * USABLE_CAPACITY_KWH)
-    kwh_fins_escut = max(0.0, ((soc - RESERVE_SOC) / 100.0) * USABLE_CAPACITY_KWH)
+    kwh_actuals = (soc / 100.0) * NET_CAPACITY_KWH
+    kwh_utils = max(0.0, ((soc - SHUTDOWN_SOC_PERCENT) / 100.0) * NET_CAPACITY_KWH)
+    kwh_fins_escut = max(0.0, ((soc - SAI_TARGET_RESERVE_SOC) / 100.0) * NET_CAPACITY_KWH)
 
     # 1. BATERIA
-    print("┌" + "─" * (BOX_WIDTH + 2) + "┤".replace("┤", "┐"))
+    print("┌" + "─" * (BOX_WIDTH + 2) + "┐")
     print(box_line(f"🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}"))
     
     soc_color = GREEN if soc >= 70 else (YELLOW if soc >= 40 else RED)
     status_str = "[Carregant]" if pylon_i and pylon_i > 0.5 else ("[Descarregant]" if pylon_i and pylon_i < -0.5 else "[En Repòs]")
     soh_str = f"  (SoH BMS: {soh:.0f}%)" if soh is not None else ""
     print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc:.1f}%{RESET}  {status_str}{soh_str}"))
-    print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actuals:.2f} kWh{RESET} actuals | {GREEN}{kwh_utils:.2f} kWh{RESET} útils (tall {HARD_CUTOFF_SOC:.0f}%)"))
-    print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_fins_escut:.2f} kWh{RESET} lliures (abans del sòl del {RESERVE_SOC:.0f}%)"))
+    print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actuals:.2f} kWh{RESET} actuals | {GREEN}{kwh_utils:.2f} kWh{RESET} útils (tall {SHUTDOWN_SOC_PERCENT:.0f}%)"))
+    print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_fins_escut:.2f} kWh{RESET} lliures (abans del sòl del {SAI_TARGET_RESERVE_SOC:.0f}%)"))
     
     if pylon_v is not None and pylon_i is not None and pylon_p is not None:
         print(box_line(f"   • Tensió i Corrent:        {pylon_v:.2f} V  |  {pylon_i:.1f} A ({pylon_p:.0f} W)"))
