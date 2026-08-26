@@ -250,9 +250,19 @@ def main():
     cell_min = data.get(f"N/{portal}/battery/512/System/MinCellVoltage")
     
     solar_p = data.get(f"N/{portal}/pvinverter/31/Ac/Power") or 0.0
-    ac_loads = data.get(f"N/{portal}/system/0/Ac/Consumption/L1/Power") or 0.0
+    ac_loads = data.get(f"N/{portal}/system/0/Ac/Consumption/L1/Power")
+    if ac_loads is None:
+        ac_loads = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/P")
+    if ac_loads is None:
+        ac_loads = data.get(f"N/{portal}/vebus/276/Ac/Out/P") or 0.0
+
     grid_p = data.get(f"N/{portal}/system/0/Ac/Grid/L1/Power")
-    grid_v = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/V") or 220.0
+    if grid_p is None:
+        grid_p = data.get(f"N/{portal}/system/0/Ac/ActiveIn/L1/Power")
+    if grid_p is None:
+        grid_p = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/P")
+    if grid_p is None:
+        grid_p = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/P")
     vebus_mode = data.get(f"N/{portal}/vebus/276/Mode")
     ac_freq = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/F") or 50.0
 

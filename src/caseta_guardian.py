@@ -332,6 +332,10 @@ class CasetaGuardian:
             }
             with open("/tmp/caseta_forecast_cache.json", "w") as f:
                 json.dump(cache, f)
+            if self.client:
+                self.client.publish("caseta/forecast", json.dumps({"value": cache}), retain=True)
+                if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                    self.client.publish(f"N/{self.portal_id}/caseta/forecast", json.dumps({"value": cache}), retain=True)
                 
         except Exception as e:
             log.warning(f"Error actualitzant Open-Meteo: {e}")
@@ -690,9 +694,9 @@ class CasetaGuardian:
                 
             elif topic.endswith("/pvinverter/31/Ac/Power"):
                 self.pv_p = float(val) if val is not None else self.pv_p
-            elif topic.endswith("/system/0/Ac/Consumption/L1/Power"):
+            elif topic.endswith("/system/0/Ac/Consumption/L1/Power") or topic.endswith("/vebus/276/Ac/Out/L1/P") or topic.endswith("/vebus/276/Ac/Out/P"):
                 self.ac_loads = float(val) if val is not None else self.ac_loads
-            elif topic.endswith("/system/0/Ac/Grid/L1/Power"):
+            elif topic.endswith("/system/0/Ac/Grid/L1/Power") or topic.endswith("/system/0/Ac/ActiveIn/L1/Power") or topic.endswith("/vebus/276/Ac/ActiveIn/L1/P") or topic.endswith("/vebus/276/Ac/ActiveIn/P"):
                 self.grid_p = float(val) if val is not None else self.grid_p
             elif topic.endswith("/vebus/276/Ac/ActiveIn/L1/V"):
                 self.grid_v = float(val) if val is not None else self.grid_v
