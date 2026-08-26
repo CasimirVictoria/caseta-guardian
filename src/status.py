@@ -263,6 +263,8 @@ def main():
         grid_p = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/P")
     if grid_p is None:
         grid_p = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/P")
+
+    grid_v = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/V") or 220.0
     vebus_mode = data.get(f"N/{portal}/vebus/276/Mode")
     ac_freq = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/F") or 50.0
 
