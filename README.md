@@ -105,6 +105,8 @@ Unlike conventional off-grid setups that cycle the battery deeply every single d
   │    • Overnight 100% Top-Balancing using off-peak electricity rates.    │
   │    • Instant grid reconnection if discharge exceeds 15 A (>750 W)      │
   │      for >5 s or if SoC drops below 80% in islanded Mode 2.            │
+  │    • ⚡ 1C Protection (>=70A / ~3.5 kW for >15s): Emergency AC+Termo cut.│
+  │    • ⚡ 0.5C Protection (>=34A / ~1.7 kW for >3 min): Thermal stress cut. │
   │    • ❄️ TIER 1 (SoC < 50%): Preventative AC shutdown via Tuya Cloud IR.│
   │    • 🚨 TIER 2 (SoC < 45%): Complete load cutoff (AC + Water Heater    │
   │      smart plug OFF). Guarantees 1.12 kWh down to the 10% BMS hardware │

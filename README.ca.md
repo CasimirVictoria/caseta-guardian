@@ -105,6 +105,8 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
   │    • Top-Balancing nocturn al 100% aprofitant tarifa supervall.        │
   │    • Reconnexió immediata a xarxa si la descàrrega supera 15 A         │
   │      (>750 W) durant >5 s o si el SoC baixa del 80% en mode aïllat.    │
+  │    • ⚡ Protecció 1C (>=70A / ~3.5 kW per >15s): Tall d'urgència AC+Termo.│
+  │    • ⚡ Protecció 0.5C (>=34A / ~1.7 kW per >3 min): Tall per estrès tèrmic.│
   │    • ❄️ ESGGLO 1 (SoC < 50%): Apagada preventiva de l'AC per Tuya IR. │
   │    • 🚨 ESGGLO 2 (SoC < 45%): Desconnexió total d'AC + Termo elèctric  │
   │      (endoll Tuya LAN/Cloud). Garanteix 1,12 kWh fins al tall del 10%  │

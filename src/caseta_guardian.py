@@ -173,6 +173,10 @@ class CasetaGuardian:
         self.last_termo_update_time = 0.0
         self.termo_status = {}
         
+        # Protecció de Corrent i C-rate de Bateria
+        self.c1_discharge_start_time = None
+        self.c05_discharge_start_time = None
+        
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
         self.load_daily_stats()
@@ -878,6 +882,40 @@ class CasetaGuardian:
                 self.send_termo_tuya_command(power=False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Termo")
                 self.send_notification("🚨 Blindatge Total SAI", "Bateria <45%! S'ha desconnectat el termo i l'AC per blindar 18h de reserva a la nevera i router!", "high", "zap")
                 self.termo_cut_off_today = True
+
+        # ⚡ PROTECCIÓ C-RATE A: Pic de Sobrecàrrega 1C (>=70A / ~3.5kW durant >15 segons)
+        if self.bat_i <= -70.0:
+            if self.c1_discharge_start_time is None:
+                self.c1_discharge_start_time = now
+            elif now - self.c1_discharge_start_time >= 15.0:
+                self.send_ac_tuya_command(power=0, reason="🚨 Tall 1C: Descàrrega >70A (>15s)")
+                self.send_termo_tuya_command(power=False, reason="🚨 Tall 1C: Descàrrega >70A (>15s)")
+                self.send_notification(
+                    "🚨 Sobrecorrent Crític Bateria",
+                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=1C / ~3.5kW) durant >15s! S'han desconnectat l'AC i el Termo per protegir les cel·les LiFePO4.",
+                    "high",
+                    "warning"
+                )
+                self.c1_discharge_start_time = None
+        else:
+            self.c1_discharge_start_time = None
+
+        # ⚡ PROTECCIÓ C-RATE B: Sobrecàrrega Sostinguda 0.5C (>=34A / ~1.7kW durant >3 minuts)
+        if self.bat_i <= -34.0:
+            if self.c05_discharge_start_time is None:
+                self.c05_discharge_start_time = now
+            elif now - self.c05_discharge_start_time >= 180.0:
+                self.send_ac_tuya_command(power=0, reason="🚨 Tall 0.5C: Descàrrega sostinguda >34A (>3 min)")
+                self.send_termo_tuya_command(power=False, reason="🚨 Tall 0.5C: Descàrrega sostinguda >34A (>3 min)")
+                self.send_notification(
+                    "🚨 Sobrecàrrega Sostinguda Bateria",
+                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=34A / ~1.7kW) durant >3 minuts! S'han apagat l'AC i el Termo per evitar estrès tèrmic.",
+                    "high",
+                    "warning"
+                )
+                self.c05_discharge_start_time = None
+        else:
+            self.c05_discharge_start_time = None
 
         if self.vebus_mode != 2 and self.grid_v < 190.0:
             if self.low_voltage_start_time is None:
