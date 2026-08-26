@@ -92,6 +92,7 @@ def get_telemetry():
     mqtt_clima = [None]
     mqtt_inforatge = [None]
     mqtt_ac = [None]
+    mqtt_termo = [None]
 
     def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("N/+/battery/512/#")
@@ -116,6 +117,8 @@ def get_telemetry():
                 mqtt_inforatge[0] = val
             elif "caseta/ac" in msg.topic:
                 mqtt_ac[0] = val
+            elif "caseta/termo" in msg.topic:
+                mqtt_termo[0] = val
             elif "caseta/clima" in msg.topic:
                 raw_json = json.loads(msg.payload.decode())
                 mqtt_clima[0] = raw_json.get("value") if isinstance(raw_json, dict) and "value" in raw_json else raw_json
@@ -130,7 +133,7 @@ def get_telemetry():
         client.connect(CERBO_IP, 1883, 2)
     except Exception as e:
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
-        return {}, None, None, None, None, None, None
+        return {}, None, None, None, None, None, None, None
 
     client.loop_start()
     start = time.time()
@@ -149,7 +152,7 @@ def get_telemetry():
         
     client.loop_stop()
     client.disconnect()
-    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0], mqtt_inforatge[0], mqtt_ac[0]
+    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0], mqtt_inforatge[0], mqtt_ac[0], mqtt_termo[0]
 
 def get_forecast(mqtt_forecast=None):
     if mqtt_forecast:
@@ -238,7 +241,7 @@ def main():
     now_ts = datetime.datetime.now().strftime("%d/%m/%Y - %H:%M:%S")
     print(f"{DIM}🕒 Registre en directe: {now_ts}{RESET}\n")
     
-    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima, mqtt_inforatge, mqtt_ac = get_telemetry()
+    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima, mqtt_inforatge, mqtt_ac, mqtt_termo = get_telemetry()
     if not data or not portal:
         print(f"{RED}No s'han pogut obtenir dades del Cerbo GX.{RESET}\n")
         return
@@ -259,6 +262,7 @@ def main():
         sol_peak_w = 0.0
         exp_kwh_today = 0.0
         cov_pct_today = (sol_kwh_today / max(0.01, con_kwh_today)) * 100.0
+
     soc = data.get(f"N/{portal}/battery/512/Soc")
     soh = data.get(f"N/{portal}/battery/512/Soh")
     pylon_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage")
@@ -414,6 +418,16 @@ def main():
             else:
                 ac_str = f"{DIM}⚪ Apagat / En Repòs{RESET}"
             print(box_line(f"   • {BOLD}Climatització AC:{RESET}      {ac_str}"))
+
+        # Termo Elèctric (Tuya Plug / Local)
+        if mqtt_termo and isinstance(mqtt_termo, dict):
+            is_on = mqtt_termo.get("is_on", False)
+            p_w = mqtt_termo.get("power_w", 0.0)
+            if is_on:
+                termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Encès{RESET}]"
+            else:
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}]"
+            print(box_line(f"   • {BOLD}Termo Elèctric:{RESET}        {termo_str}"))
 
         # Inforatge Ador
         if mqtt_inforatge and mqtt_inforatge.get("temperatura") is not None:

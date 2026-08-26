@@ -169,8 +169,9 @@ class CasetaGuardian:
         self.last_presence_seen_time = time.time()
         self.ac_current_power = 1
         self.ac_current_temp = 26
-        self.clima_sensors = {}
-        self.last_disk_save_time = time.time()
+        # Termo Elèctric (Tuya Plug)
+        self.last_termo_update_time = 0.0
+        self.termo_status = {}
         
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
@@ -408,6 +409,64 @@ class CasetaGuardian:
             log.info(f"📍 Inforatge Ador: Ext {temp}ºC | Hum {hum}% | Vent {vent_vel} km/h {vent_dir} | Pressió {press} hPa")
         except Exception as e:
             log.warning(f"Error consultant Inforatge Ador: {e}")
+
+    def update_termo_status(self):
+        """Consulta periòdicament l'estat del Termo Elèctric (Tuya Plug) i publica la telemetria a FlashMQ."""
+        now = time.time()
+        if now - self.last_termo_update_time < 30.0:
+            return
+        self.last_termo_update_time = now
+
+        try:
+            cfg = load_config()
+            cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
+            sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
+            deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
+            base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
+
+            t_ms = str(int(now * 1000))
+            url_path_token = "/v1.0/token?grant_type=1"
+            content_hash = hashlib.sha256(b"").hexdigest()
+            sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
+            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
+                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+            })
+            with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
+                token = json.loads(rep_tok.read().decode())["result"]["access_token"]
+
+            path_status = f"/v1.0/devices/{deviceId}/status"
+            t_ms = str(int(time.time() * 1000))
+            content_hash = hashlib.sha256(b"").hexdigest()
+            sign_str = f"{cid}{token}{t_ms}GET\n{content_hash}\n\n{path_status}"
+            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+
+            req_status = urllib.request.Request(f"{base_url}{path_status}", headers={
+                "client_id": cid, "access_token": token, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+            })
+            with urllib.request.urlopen(req_status, timeout=5) as rep:
+                res = json.loads(rep.read().decode())
+                status_list = res.get("result", [])
+                status_map = {item["code"]: item["value"] for item in status_list}
+                is_on = status_map.get("switch_1", False)
+                power_w = status_map.get("cur_power", 0) / 10.0
+                voltage_v = status_map.get("cur_voltage", 0) / 10.0
+                current_a = status_map.get("cur_current", 0) / 1000.0
+
+                termo_data = {
+                    "is_on": is_on,
+                    "power_w": round(power_w, 1),
+                    "voltage_v": round(voltage_v, 1),
+                    "current_a": round(current_a, 2),
+                    "timestamp": now
+                }
+                self.termo_status = termo_data
+                if self.client:
+                    self.client.publish("caseta/termo", json.dumps({"value": termo_data}), retain=True)
+                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                        self.client.publish(f"N/{self.portal_id}/caseta/termo", json.dumps({"value": termo_data}), retain=True)
+        except Exception:
+            pass
 
     def send_ac_tuya_command(self, power=1, temp=26, mode=0, fan=0, reason=""):
         """Envia ordres d'infrarojos al Mitsubishi Electric mitjançant Tuya Cloud OpenAPI i publica a MQTT."""
@@ -891,6 +950,7 @@ class CasetaGuardian:
                 self.sync_cerbo_min_soc(now_madrid)
                 self.update_energy_forecast()
                 self.update_inforatge()
+                self.update_termo_status()
                 self.update_energy_integrals(now_madrid)
                 self.evaluate_state_machine()
                 self.evaluate_climate_control(now_madrid)
