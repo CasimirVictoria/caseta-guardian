@@ -416,17 +416,53 @@ class CasetaGuardian:
             log.warning(f"Error consultant Inforatge Ador: {e}")
 
     def update_termo_status(self):
-        """Consulta periòdicament l'estat del Termo Elèctric (Tuya Plug) i publica la telemetria a FlashMQ."""
+        """Consulta periòdicament l'estat del Termo Elèctric (Tuya Plug) via LocalTuya LAN directa i publica a FlashMQ."""
         now = time.time()
         if now - self.last_termo_update_time < 30.0:
             return
         self.last_termo_update_time = now
 
+        cfg = load_config()
+        deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
+        ip = cfg.get("tuya_termo_ip", "192.168.1.100")
+        local_key = cfg.get("tuya_termo_local_key", "a|Ul|G=$U%b{{K9g")
+        version = float(cfg.get("tuya_termo_version", 3.3))
+
+        # 1. Intent Directe per LocalTuya (LAN local, 0 dependència d'internet)
         try:
-            cfg = load_config()
+            import tinytuya
+            d = tinytuya.OutletDevice(deviceId, ip, local_key)
+            d.set_version(version)
+            d.set_socketPersistent(False)
+            data = d.status()
+            dps = data.get("dps", {})
+            if dps:
+                is_on = bool(dps.get("1", False))
+                current_a = float(dps.get("18", 0)) / 1000.0
+                power_w = float(dps.get("19", 0)) / 10.0
+                voltage_v = float(dps.get("20", 0)) / 10.0
+
+                termo_data = {
+                    "is_on": is_on,
+                    "power_w": round(power_w, 1),
+                    "voltage_v": round(voltage_v, 1),
+                    "current_a": round(current_a, 2),
+                    "source": "localtuya",
+                    "timestamp": now
+                }
+                self.termo_status = termo_data
+                if self.client:
+                    self.client.publish("caseta/termo", json.dumps({"value": termo_data}), retain=True)
+                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                        self.client.publish(f"N/{self.portal_id}/caseta/termo", json.dumps({"value": termo_data}), retain=True)
+                return
+        except Exception as e_local:
+            log.debug(f"LocalTuya status error: {e_local}")
+
+        # 2. Fallback Tuya Cloud OpenAPI si falla la xarxa local
+        try:
             cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
             sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
-            deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
             base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
 
             t_ms = str(int(now * 1000))
@@ -463,6 +499,7 @@ class CasetaGuardian:
                     "power_w": round(power_w, 1),
                     "voltage_v": round(voltage_v, 1),
                     "current_a": round(current_a, 2),
+                    "source": "tuya_cloud",
                     "timestamp": now
                 }
                 self.termo_status = termo_data
@@ -474,12 +511,29 @@ class CasetaGuardian:
             pass
 
     def send_termo_tuya_command(self, power: bool = False, reason: str = ""):
-        """Envia ordre d'encesa/apagada a l'endoll intel·ligent del Termo Elèctric via Tuya Cloud OpenAPI."""
+        """Envia ordre d'encesa/apagada al Termo Elèctric via LocalTuya (LAN directa) amb fallback a Tuya Cloud."""
+        cfg = load_config()
+        deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
+        ip = cfg.get("tuya_termo_ip", "192.168.1.100")
+        local_key = cfg.get("tuya_termo_local_key", "a|Ul|G=$U%b{{K9g")
+        version = float(cfg.get("tuya_termo_version", 3.3))
+
+        # 1. Intent Prioritari LocalTuya LAN (Instantani <20ms, sense dependre d'internet)
         try:
-            cfg = load_config()
+            import tinytuya
+            d = tinytuya.OutletDevice(deviceId, ip, local_key)
+            d.set_version(version)
+            d.set_socketPersistent(False)
+            res = d.set_status(power, 1)
+            log.info(f"♨️ [TERMO LOCALTUYA LAN] Power {'ON' if power else 'OFF'} ({reason}): {res}")
+            return res
+        except Exception as e_local:
+            log.warning(f"Error enviant per LocalTuya LAN: {e_local}. Reintentant per Tuya Cloud...")
+
+        # 2. Fallback Tuya Cloud OpenAPI
+        try:
             cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
             sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
-            deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
             base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
 
             t_ms = str(int(time.time() * 1000))
@@ -505,10 +559,10 @@ class CasetaGuardian:
             }, method="POST")
             with urllib.request.urlopen(req_cmd, timeout=5) as rep:
                 res = json.loads(rep.read().decode())
-                log.info(f"♨️ [TERMO AUTÒNOM] Termo Power {'ON' if power else 'OFF'} ({reason}): {res}")
+                log.info(f"♨️ [TERMO TUYA CLOUD] Termo Power {'ON' if power else 'OFF'} ({reason}): {res}")
                 return res
         except Exception as e:
-            log.warning(f"Error enviant comanda Termo Tuya: {e}")
+            log.error(f"Error fatal enviant comanda Termo Tuya Cloud: {e}")
             return False
 
     def send_ac_tuya_command(self, power=1, temp=26, mode=0, fan=0, reason=""):
