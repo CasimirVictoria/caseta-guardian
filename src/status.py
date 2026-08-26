@@ -242,6 +242,20 @@ def main():
 
     forecast = get_forecast(mqtt_forecast)
     daily_stats = get_daily_stats(mqtt_stats)
+
+    if daily_stats:
+        sol_kwh_today = daily_stats.get("solar_kwh_today", 0.0)
+        sol_peak_w = daily_stats.get("solar_peak_w", 0.0)
+        con_kwh_today = daily_stats.get("consumption_kwh_today", 0.0)
+        imp_kwh_today = daily_stats.get("grid_import_kwh_today", 0.0)
+        exp_kwh_today = daily_stats.get("grid_export_kwh_today", 0.0)
+        cov_pct_today = daily_stats.get("solar_coverage_percent", 0.0)
+        cost_today = daily_stats.get("cost_total_today", 0.0)
+    else:
+        sol_kwh_today, con_kwh_today, imp_kwh_today, cost_today = get_today_accumulated_from_file()
+        sol_peak_w = 0.0
+        exp_kwh_today = 0.0
+        cov_pct_today = (sol_kwh_today / max(0.01, con_kwh_today)) * 100.0
     soc = data.get(f"N/{portal}/battery/512/Soc")
     soh = data.get(f"N/{portal}/battery/512/Soh")
     pylon_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage")
