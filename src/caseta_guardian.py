@@ -564,6 +564,21 @@ class CasetaGuardian:
         if now - self.last_ac_command_time < 600:
             return
 
+        # ♨️ LLEI 2.0: Peak Shaving & Prioritat Termo Elèctric
+        # Si el termo està calfant aigua (>=500W), pugem l'AC a 27ºC per alliberar ~700W elèctrics i evitar pics de potència/caigudes de tensió
+        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
+        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
+        if termo_on and termo_p >= 500.0:
+            if self.ac_current_power != 1 or self.ac_current_temp < 27:
+                self.send_ac_tuya_command(
+                    power=1,
+                    temp=27,
+                    mode=0,
+                    fan=0,
+                    reason=f"♨️ Peak Shaving: Termo actiu ({termo_p:.0f}W) -> AC modulat a 27ºC"
+                )
+            return
+
         hour = now_madrid.hour
         
         # 🌙 LLEI 2.1: Horari Nocturn (23:00 - 07:59h): Confort suau de descans a 26.5ºC
