@@ -504,35 +504,40 @@ class CasetaGuardian:
         if now - self.last_ac_command_time < 600:
             return
 
-        # ☀️ LLEI 3: Super-Excedent Solar / Bateria Tèrmica (>600W & SoC >= 80%) -> Absorció Màxima a 22ºC + Ventilador Alt
-        if self.pv_p >= 600.0 and self.soc >= 80.0:
-            if self.ac_current_power != 1 or self.ac_current_temp != 22:
-                self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Super-Excedent Solar ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> Absorció Màxima a 22ºC i Ventilador Alt")
-            return
-
-        # ❄️ LLEI 2: Confort Familiar i Presència
         hour = now_madrid.hour
         
-        # Horari Nocturn (23:00 - 07:59h): Confort suau de descans a 26.5ºC
+        # 🌙 LLEI 2.1: Horari Nocturn (23:00 - 07:59h): Confort suau de descans a 26.5ºC
         if hour >= 23 or hour < 8:
             if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🌙 Horari Nocturn: Descans a 26.5ºC")
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🌙 Horari Nocturn: Descans a 26.5ºC (Ventilador Auto)")
             return
 
-        # Horari Diürn (08:00 - 22:59h)
-        # Si la bateria està per sobre del 69%, mantenim SEMPRE el confort base a 26ºC sense fluctuacions
+        # ☀️ LLEI 3: Escala Solar Dinàmica Diürna (08:00 - 22:59h)
+        # Graó 1: Super-Excedent Migdia (Sol >= 600W & SoC >= 85% & abans de les 16:00h) -> 22ºC + Ventilador Alt (3)
+        if self.pv_p >= 600.0 and self.soc >= 85.0 and hour < 16:
+            if self.ac_current_power != 1 or self.ac_current_temp != 22:
+                self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Graó 1: Super-Excedent Migdia ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 22ºC (Ventilador Alt)")
+            return
+
+        # Graó 2: Transició Tarda / Excedent Moderat (Sol >= 250W & SoC >= 75% o tarda >=16h amb bateria plena) -> 24ºC + Ventilador Auto (0)
+        if (self.pv_p >= 250.0 and self.soc >= 75.0) or (hour >= 16 and self.soc >= 80.0 and self.pv_p >= 150.0):
+            if self.ac_current_power != 1 or self.ac_current_temp != 24:
+                self.send_ac_tuya_command(power=1, temp=24, mode=0, fan=0, reason=f"🌤️ Graó 2: Transició Tarda/Moderat ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 24ºC (Ventilador Auto)")
+            return
+
+        # Graó 3: Confort Base Permanent Diürn (SoC >= 69%) -> 26ºC + Ventilador Auto (0)
         if self.soc >= 69.0:
             if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🏰 Confort Estable a 26ºC (SoC >= 69%)")
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🏰 Graó 3: Confort Base Estable a 26ºC (Ventilador Auto)")
         else:
-            # Si la bateria baixa del 69% I fa >30 minuts que no hi ha ningú: Mode Eco 28ºC per protegir la bateria
+            # Bateria Baixa (<69%) I repòs >30 min -> Mode Eco 28ºC per protegir el coixí
             time_since_presence = now - self.last_presence_seen_time
             if time_since_presence > 1800:
                 if self.ac_current_power != 1 or self.ac_current_temp != 28:
-                    self.send_ac_tuya_command(power=1, temp=28, mode=0, reason="🟢 Repòs >30 min i Bateria <69% (Mode Eco 28ºC)")
+                    self.send_ac_tuya_command(power=1, temp=28, mode=0, fan=0, reason="🟢 Repòs >30 min i Bateria <69% (Mode Eco 28ºC)")
             else:
                 if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                    self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🚶 Presència activa (Confort 26ºC)")
+                    self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🚶 Presència activa (Confort 26ºC)")
 
     def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
