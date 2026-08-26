@@ -164,6 +164,13 @@ class CasetaGuardian:
         self.relay_switch_count = 0
         self.tuya_ac_turned_off_today = False
         
+        # Climatització Autònoma (4 Lleis)
+        self.last_ac_command_time = 0.0
+        self.last_presence_seen_time = time.time()
+        self.ac_current_power = 1
+        self.ac_current_temp = 26
+        self.clima_sensors = {}
+        
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
         self.load_daily_stats()
@@ -401,77 +408,125 @@ class CasetaGuardian:
         except Exception as e:
             log.warning(f"Error consultant Inforatge Ador: {e}")
 
-    def trigger_tuya_ac_off(self):
-        if self.tuya_ac_turned_off_today:
-            return
-            
-        log.info("❄️ [ESCUT CLIMÀTIC] Apagant Aire Condicionat per infrarojos Tuya Cloud...")
-        self.tuya_ac_turned_off_today = True
-        
+    def send_ac_tuya_command(self, power=1, temp=26, mode=0, reason=""):
+        """Envia ordres d'infrarojos al Mitsubishi Electric mitjançant Tuya Cloud OpenAPI i publica a MQTT."""
+        now = time.time()
+        self.last_ac_command_time = now
         try:
             cfg = load_config()
-            cid = cfg.get("tuya_cloud_client_id")
-            sec = cfg.get("tuya_cloud_secret")
-            infrared_id = cfg.get("tuya_cloud_infrared_id", cfg.get("tuya_s06_id"))
-            remote_id = cfg.get("tuya_cloud_remote_id", cfg.get("tuya_ac_remote_id"))
+            cid = cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
+            sec = cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
+            infrared_id = cfg.get("tuya_infrared_id", "bf9d7ccaca278f0d6dltaf")
+            remote_id = cfg.get("tuya_remote_id", "bfc77f364d40be79e86290")
             base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
-            
-            if not cid or not sec or not infrared_id or not remote_id:
-                log.warning("⚠️ Claus Tuya Cloud no configurades a config.json. No es pot enviar l'ordre.")
-                return
-            
+
             # 1. Obtenir Token Tuya
-            t_ms = str(int(time.time() * 1000))
+            t_ms = str(int(now * 1000))
             url_path_token = "/v1.0/token?grant_type=1"
             content_hash = hashlib.sha256(b"").hexdigest()
             str_to_sign = f"GET\n{content_hash}\n\n{url_path_token}"
             sign_str = f"{cid}{t_ms}{str_to_sign}"
             sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-            
             req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
-                "client_id": cid,
-                "sign": sign,
-                "t": t_ms,
-                "sign_method": "HMAC-SHA256",
-                "Content-Type": "application/json"
+                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
             })
-            
             with urllib.request.urlopen(req_token, timeout=8) as rep_tok:
                 tok_data = json.loads(rep_tok.read().decode())
                 token = tok_data.get("result", {}).get("access_token")
-                
+
             if not token:
                 log.warning(f"No s'ha pogut obtenir token Tuya: {tok_data}")
-                return
-                
-            # 2. Enviar ordre Power OFF per a l'Aire Condicionat
-            t_ms = str(int(time.time() * 1000))
-            url_path_cmd = f"/v2.0/infrareds/{infrared_id}/air-conditioners/{remote_id}/command"
-            body_dict = {"code": "power", "value": 0}
-            body_str = json.dumps(body_dict)
-            content_hash = hashlib.sha256(body_str.encode()).hexdigest()
-            str_to_sign = f"POST\n{content_hash}\n\n{url_path_cmd}"
-            sign_str = f"{cid}{token}{t_ms}{str_to_sign}"
-            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-            
-            req_cmd = urllib.request.Request(f"{base_url}{url_path_cmd}", data=body_str.encode(), headers={
-                "client_id": cid,
-                "access_token": token,
-                "sign": sign,
-                "t": t_ms,
-                "sign_method": "HMAC-SHA256",
-                "Content-Type": "application/json"
-            }, method="POST")
-            
-            with urllib.request.urlopen(req_cmd, timeout=8) as rep_cmd:
-                result_data = json.loads(rep_cmd.read().decode())
-                if result_data.get("result") is True or result_data.get("success") is True:
-                    log.info("❄️ Comanda Tuya Cloud 'power=0' (Apagat AC) transmesa amb èxit al S06!")
-                    self.send_notification("❄️ Escut Domòtic Activat", "S'ha apagat l'aire condicionat automàticament per protegir la reserva del 65% de la bateria!", "high", "snowflake")
-                else:
-                    log.warning(f"Resposta Tuya Cloud: {result_data}")
+                return False
+
+            def send_sub_cmd(code, val):
+                t_ms_sub = str(int(time.time() * 1000))
+                url_path_cmd = f"/v2.0/infrareds/{infrared_id}/air-conditioners/{remote_id}/command"
+                body_dict = {"code": code, "value": val}
+                body_str = json.dumps(body_dict)
+                c_hash = hashlib.sha256(body_str.encode()).hexdigest()
+                s_to_sign = f"POST\n{c_hash}\n\n{url_path_cmd}"
+                s_str = f"{cid}{token}{t_ms_sub}{s_to_sign}"
+                s = hmac.new(sec.encode(), s_str.encode(), hashlib.sha256).hexdigest().upper()
+                req_cmd = urllib.request.Request(f"{base_url}{url_path_cmd}", data=body_str.encode(), headers={
+                    "client_id": cid, "access_token": token, "sign": s, "t": t_ms_sub, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+                }, method="POST")
+                with urllib.request.urlopen(req_cmd, timeout=8) as rep_cmd:
+                    return json.loads(rep_cmd.read().decode())
+
+            if power == 0:
+                res = send_sub_cmd("power", 0)
+                self.ac_current_power = 0
+                mode_str = "Apagat"
+                log.info(f"❄️ [CLIMA AUTÒNOM] AC Power OFF ({reason}): {res}")
+            else:
+                send_sub_cmd("power", 1)
+                time.sleep(0.3)
+                send_sub_cmd("mode", mode)
+                time.sleep(0.3)
+                res = send_sub_cmd("temp", int(temp))
+                self.ac_current_power = 1
+                self.ac_current_temp = int(temp)
+                mode_str = "Fred" if mode == 0 else "Auto"
+                log.info(f"❄️ [CLIMA AUTÒNOM] AC Consigna {temp}ºC ({reason}): {res}")
+
+            # Publicació MQTT
+            ac_payload = {
+                "power": self.ac_current_power,
+                "temp": self.ac_current_temp,
+                "mode": mode_str,
+                "reason": reason,
+                "timestamp": now
+            }
+            if self.client:
+                self.client.publish("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
+                if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                    self.client.publish(f"N/{self.portal_id}/caseta/ac", json.dumps({"value": ac_payload}), retain=True)
+
+            return True
         except Exception as e:
-            log.warning(f"Error enviant comanda Tuya Cloud: {e}")
+            log.warning(f"Error enviant comanda AC Tuya: {e}")
+            return False
+
+    def evaluate_climate_control(self, now_madrid):
+        """Avalua les 4 Lleis de Climatització Intel·ligent de la Caseta."""
+        now = time.time()
+        
+        # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Prioritat Màxima)
+        if self.vebus_mode == 2 and self.soc < 65.0:
+            if self.ac_current_power != 0:
+                self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI: Mode aïllat i bateria <65%")
+                self.send_notification("🚨 Escut SAI Activat", "S'ha apagat l'AC automàticament per protegir la reserva de seguretat de la bateria!", "high", "snowflake")
+            return
+
+        # ⚙️ LLEI 4: Protecció del Compressor i Anti-Flapping (mínim 10 minuts)
+        if now - self.last_ac_command_time < 600:
+            return
+
+        # ☀️ LLEI 3: Excedent Solar Màxim / Bateria Tèrmica (>600W & SoC >= 80%)
+        if self.pv_p >= 600.0 and self.soc >= 80.0:
+            if self.ac_current_power != 1 or self.ac_current_temp != 25:
+                self.send_ac_tuya_command(power=1, temp=25, mode=0, reason=f"☀️ Excedent Solar ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> Pre-cooling a 25ºC")
+            return
+
+        # ❄️ LLEI 2: Confort Familiar i Presència
+        hour = now_madrid.hour
+        
+        # Horari Nocturn (23:00 - 07:59h): Confort suau de descans a 26.5ºC
+        if hour >= 23 or hour < 8:
+            if self.ac_current_power != 1 or self.ac_current_temp != 26:
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🌙 Horari Nocturn: Descans a 26.5ºC")
+            return
+
+        # Horari Diürn (08:00 - 22:59h)
+        time_since_presence = now - self.last_presence_seen_time
+        if time_since_presence > 1800:
+            # 🟢 Repòs >30 minuts sense presència i sense excedent: Eco 28ºC per estalvi
+            if self.ac_current_power != 1 or self.ac_current_temp != 28:
+                self.send_ac_tuya_command(power=1, temp=28, mode=0, reason="🟢 Repòs >30 min sense ningú (Mode Eco 28ºC)")
+        else:
+            # 🚶 Presència activa / Família a casa: Confort 26ºC
+            if self.ac_current_power != 1 or self.ac_current_temp != 26:
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, reason="🚶 Presència activa al saló (Confort 26ºC)")
 
     def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
@@ -771,6 +826,11 @@ class CasetaGuardian:
                 self.vebus_mode = int(val) if val is not None else self.vebus_mode
             elif topic.endswith("/vebus/276/VebusChargeState"):
                 self.vebus_state = int(val) if val is not None else self.vebus_state
+            elif "caseta/clima" in topic and isinstance(val, dict):
+                self.clima_sensors = val.get("sensors") or {}
+                s2 = self.clima_sensors.get("sensor_2") or {}
+                if s2.get("presencia"):
+                    self.last_presence_seen_time = time.time()
                 
         except Exception:
             pass
@@ -815,6 +875,7 @@ class CasetaGuardian:
                 self.update_inforatge()
                 self.update_energy_integrals(now_madrid)
                 self.evaluate_state_machine()
+                self.evaluate_climate_control(now_madrid)
                 
                 time.sleep(1.0)
             except KeyboardInterrupt:
