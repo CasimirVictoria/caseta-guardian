@@ -199,8 +199,8 @@ def show_history():
         print(f"{YELLOW}El registre històric és buit. S'anirà omplint cada nit a les 00:00h automàticament.{RESET}\n")
         return
 
-    print(f"{BOLD}{'Data':<12} | {'Solar':<9} | {'Consum':<9} | {'Importat':<9} | {'Cob. Sol':<9} | {'Cost Total':<10} | {'Mode 2':<8} | {'ΔV Màx'}{RESET}")
-    print("─" * 86)
+    print(f"{BOLD}{'Data':<12} | {'Solar':<9} | {'Consum':<9} | {'Importat':<9} | {'Cob. Sol':<9} | {'Cost Total':<10} | {'Mode 2'}{RESET}")
+    print("─" * 76)
     
     tot_sol = 0.0
     tot_con = 0.0
@@ -213,9 +213,9 @@ def show_history():
         tot_con += float(con)
         tot_imp += float(imp)
         tot_cost += float(cost)
-        print(f"{d_str:<12} | {GREEN}{sol:>6} kWh{RESET} | {YELLOW}{con:>6} kWh{RESET} | {BLUE}{imp:>6} kWh{RESET} | {CYAN}{cov:>6} %{RESET} | {MAGENTA}{cost:>7} €{RESET} | {m2:>5} min | {dv:>3} mV")
+        print(f"{d_str:<12} | {GREEN}{sol:>6} kWh{RESET} | {YELLOW}{con:>6} kWh{RESET} | {BLUE}{imp:>6} kWh{RESET} | {CYAN}{cov:>6} %{RESET} | {MAGENTA}{cost:>7} €{RESET} | {m2:>5} min")
         
-    print("─" * 86)
+    print("─" * 76)
     print(f"{BOLD}TOTALS ({len(rows)} dies registrats):{RESET}")
     print(f" • ☀️ Solar Generat Acumulat:  {GREEN}{BOLD}{tot_sol:.2f} kWh{RESET}")
     print(f" • 🔌 Consum Casa Acumulat:    {YELLOW}{BOLD}{tot_con:.2f} kWh{RESET}")
@@ -370,11 +370,8 @@ def main():
                 t1 = s1.get("temperatura")
                 h1 = s1.get("humitat")
                 bat1 = s1.get("bateria")
-                tmax1 = f"{s1.get('t_max'):.1f} ºC ({s1.get('t_max_hora')}h)" if s1.get('t_max_hora') else "N/A"
-                tmin1 = f"{s1.get('t_min'):.1f} ºC ({s1.get('t_min_hora')}h)" if s1.get('t_min_hora') else "N/A"
                 bat_str1 = f"  [{GREEN}🔋 Pila: {bat1}%{RESET}]" if bat1 is not None else ""
                 print(box_line(f"   • {BOLD}Habitació xiquets:{RESET}     {YELLOW}{BOLD}{t1:.2f} ºC{RESET} | {CYAN}{BOLD}{h1:.1f} %{RESET}{bat_str1}"))
-                print(box_line(f"     └─ Pics d'Hui:  Màx {RED}{tmax1}{RESET} | Mín {BLUE}{tmin1}{RESET}"))
 
             # Sensor 2: Saló (ZG-204ZV)
             if s2.get("temperatura") is not None:
