@@ -750,12 +750,6 @@ class CasetaGuardian:
             except Exception:
                 pass
 
-        # Guardat de seguretat a memòria Flash (/data) cada 15 minuts (900s) per blindar la vida útil de la eMMC
-        # (Només 96 escriptures/dia) + bolcat immediat si es rep senyal de sortida (SIGTERM/SIGINT)
-        if now - self.last_disk_save_time >= 900.0:
-            self.last_disk_save_time = now
-            self.save_daily_stats()
-
     def evaluate_state_machine(self):
         now = time.time()
 
