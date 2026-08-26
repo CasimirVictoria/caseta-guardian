@@ -97,35 +97,37 @@ Unlike conventional off-grid setups that cycle the battery deeply every single d
 
 ---
 
-## 🏛️ The 4 Fundamental Priority Laws
+## 🏛️ The 4 Fundamental Priority Laws & Dynamic Load Management
 
 ```
   ┌────────────────────────────────────────────────────────────────────────┐
-  │ 1. 🛡️ BATTERY CHEMICAL HEALTH (Priority 0)                             │
+  │ 1. 🛡️ BATTERY CHEMICAL HEALTH & TWO-TIER DEFENSIVE SHIELD (Priority 0) │
   │    • Overnight 100% Top-Balancing using off-peak electricity rates.    │
   │    • Instant grid reconnection if discharge exceeds 15 A (>750 W)      │
   │      for >5 s or if SoC drops below 80% in islanded Mode 2.            │
-  │    • HVAC Emergency Cutoff: Automatic Tuya Cloud IR shutdown if SoC    │
-  │      drops below 65% to protect the 24-hour UPS reserve.               │
+  │    • ❄️ TIER 1 (SoC < 50%): Preventative AC shutdown via Tuya Cloud IR.│
+  │    • 🚨 TIER 2 (SoC < 45%): Complete load cutoff (AC + Water Heater    │
+  │      smart plug OFF). Guarantees 1.12 kWh down to the 10% BMS hardware │
+  │      floor (14 hours uninterrupted UPS runtime for fridge & router).   │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 2. 🔌 RESILIENCE & UPS BACKUP (Priority 1)                             │
+  │ 2. ♨️ DYNAMIC LOAD MANAGEMENT & PEAK SHAVING (Priority 1)              │
+  │    • Smart coordination between Water Heater (100L / 1200W) and AC:    │
+  │    • When water heater is actively heating (>=500W), AC modulates to   │
+  │      27.0 ºC (Auto Fan), instantly releasing ~700W of capacity.        │
+  │    • Strictly respects the 5A (1.15 kW) contracted grid power limit    │
+  │      and prevents rural line voltage sags (<210V).                     │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │ 3. 🔌 RESILIENCE & METEOROLOGICAL UPS (Priority 2)                     │
   │    • Automated weather modeling via Open-Meteo API every 60 minutes.   │
   │    • High Blackout Risk trigger (Tmax >= 38ºC, T21h >= 31ºC, or low    │
   │      grid voltage <190V) locks the reserve floor to 95% – 100%.        │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 3. 🏝️ ZERO GRID FEED-IN (Priority 2)                                  │
-  │    • Switches to Inverter Only (Mode 2) only when: SoC > 88%, export   │
-  │      > 50 W for >30 s, and battery is resting (<2 A discharge).        │
-  │    • The MultiPlus is configured to automatically raise the AC         │
-  │      frequency (50.2 - 51.5 Hz) to throttle the grid PV inverter.      │
-  ├────────────────────────────────────────────────────────────────────────┤
-  │ 4. ☀️ MAXIMUM SOLAR HARVEST (Priority 3)                               │
-  │    • 4-Milestone Clock Schedule:                                       │
-  │      - 00:00h - 06:59h: Min SoC = 100% (Super-off-peak & Top-balance). │
-  │      - 07:00h - 09:29h: Min SoC = 85% (Morning breakfast buffer).      │
-  │      - 09:30h - 16:29h: Min SoC = 75% (880 Wh headroom for solar peak).│
-  │      - 16:30h - 23:59h: Min SoC = 85% (Evening/night UPS reserve).     │
-  │      - Weekends & Holidays (18h+): Min SoC = 100% (24h flat valley).   │
+  │ 4. ☀️ MAXIMUM SOLAR HARVEST & CLIMATE LADDER (Priority 3)              │
+  │    • ☀️ Step 1 (Midday Solar >=600W, SoC >=85%): AC to 22ºC (High Fan). │
+  │    • 🌤️ Step 2 (Afternoon Solar >=250W or >16h, SoC >=75-80%): AC 24ºC.│
+  │    • ☕ Step 3 (Daytime Base SoC >=69%): AC to 26ºC (Auto Fan).        │
+  │    • 🌙 Night Mode (23h - 08h): AC to gentle 26.5ºC for restful sleep. │
+  │    • 4-Milestone Clock Schedule (100% / 85% / 75% / 85% SoC floors).   │
   └────────────────────────────────────────────────────────────────────────┘
 ```
 

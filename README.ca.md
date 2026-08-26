@@ -97,18 +97,27 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
 
 ---
 
-## 🏛️ Les 4 Lleis Fonamentals de Prioritat
+## 🏛️ Les 4 Lleis Fonamentals de Prioritat & Gestió de Càrregues
 
 ```
   ┌────────────────────────────────────────────────────────────────────────┐
-  │ 1. 🛡️ SALUT DE LA BATERIA (Prioritat 0)                               │
+  │ 1. 🛡️ SALUT DE LA BATERIA & ESCUT DEFENSIU DE 2 NIVELLS (Prioritat 0)  │
   │    • Top-Balancing nocturn al 100% aprofitant tarifa supervall.        │
   │    • Reconnexió immediata a xarxa si la descàrrega supera 15 A         │
   │      (>750 W) durant >5 s o si el SoC baixa del 80% en mode aïllat.    │
-  │    • Escut de Seguretat Climatització: Apagada automàtica de l'aire     │
-  │      condicionat per Tuya Cloud IR si el SoC baixa del 65%.            │
+  │    • ❄️ ESGGLO 1 (SoC < 50%): Apagada preventiva de l'AC per Tuya IR. │
+  │    • 🚨 ESGGLO 2 (SoC < 45%): Desconnexió total d'AC + Termo elèctric  │
+  │      (endoll Tuya LAN/Cloud). Garanteix 1,12 kWh fins al tall del 10%  │
+  │      del BMS (14 hores de SAI ininterromput per a nevera i router).    │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 2. 🔌 RESILIÈNCIA I SAI (Prioritat 1)                                  │
+  │ 2. ♨️ GESTIÓ DINÀMICA DE CÀRREGUES & PEAK SHAVING (Prioritat 1)        │
+  │    • Coordinació intel·ligent Termo (100L / 1200W) & Aire Condicionat:  │
+  │    • Quan el termo està calfant (>=500W), l'AC es modula a 27.0 ºC     │
+  │      alliberant ~700W elèctrics.                                       │
+  │    • Respecte escrupulós del límit dels 5A contractats (1.15 kW) i     │
+  │      protecció contra caigudes de tensió a la línia rural (<210V).     │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │ 3. 🔌 RESILIÈNCIA I SAI METEOROLÒGIC (Prioritat 2)                     │
   │    • Consulta meteorològica Open-Meteo cada 60 minuts.                 │
   │    • Si detecta onada de calor extrema (Tmax >= 38ºC o T21h >= 31ºC)   │
   │      o tensió baixa de xarxa (<190V), blinda el sòl al 95% – 100%.     │
