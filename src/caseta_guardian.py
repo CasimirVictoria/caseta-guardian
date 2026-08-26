@@ -504,10 +504,10 @@ class CasetaGuardian:
         if now - self.last_ac_command_time < 600:
             return
 
-        # ☀️ LLEI 3: Excedent Solar Màxim / Bateria Tèrmica (>600W & SoC >= 80%)
+        # ☀️ LLEI 3: Super-Excedent Solar / Bateria Tèrmica (>600W & SoC >= 80%) -> Absorció Màxima a 22ºC + Ventilador Alt
         if self.pv_p >= 600.0 and self.soc >= 80.0:
-            if self.ac_current_power != 1 or self.ac_current_temp != 25:
-                self.send_ac_tuya_command(power=1, temp=25, mode=0, reason=f"☀️ Excedent Solar ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> Pre-cooling a 25ºC")
+            if self.ac_current_power != 1 or self.ac_current_temp != 22:
+                self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Super-Excedent Solar ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> Absorció Màxima a 22ºC i Ventilador Alt")
             return
 
         # ❄️ LLEI 2: Confort Familiar i Presència
