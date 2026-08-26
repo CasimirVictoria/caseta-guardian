@@ -170,6 +170,7 @@ class CasetaGuardian:
         self.ac_current_power = 1
         self.ac_current_temp = 26
         self.clima_sensors = {}
+        self.last_disk_save_time = time.time()
         
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
@@ -742,12 +743,6 @@ class CasetaGuardian:
                 "timestamp": now
             }
             try:
-                with open("/tmp/caseta_daily_stats.json", "w") as f:
-                    json.dump(stats, f)
-            except Exception:
-                pass
-
-            try:
                 if self.client:
                     if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
                         self.client.publish(f"N/{self.portal_id}/caseta/stats", json.dumps({"value": stats}), retain=True)
@@ -825,9 +820,9 @@ class CasetaGuardian:
             elif topic.endswith("/battery/512/System/MinCellVoltage"):
                 self.cell_min = float(val) if val is not None else self.cell_min
                 
-            elif topic.endswith("/pvinverter/31/Ac/Power"):
+            elif topic.endswith("/pvinverter/31/Ac/Power") or topic.endswith("/pvinverter/31/Ac/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/Power"):
                 self.pv_p = float(val) if val is not None else self.pv_p
-            elif topic.endswith("/system/0/Ac/Consumption/L1/Power") or topic.endswith("/vebus/276/Ac/Out/L1/P") or topic.endswith("/vebus/276/Ac/Out/P"):
+            elif topic.endswith("/system/0/Ac/Consumption/L1/Power") or topic.endswith("/system/0/Ac/ConsumptionOnOutput/L1/Power") or topic.endswith("/vebus/276/Ac/Out/L1/P") or topic.endswith("/vebus/276/Ac/Out/P"):
                 self.ac_loads = float(val) if val is not None else self.ac_loads
             elif topic.endswith("/system/0/Ac/Grid/L1/Power") or topic.endswith("/system/0/Ac/ActiveIn/L1/Power") or topic.endswith("/vebus/276/Ac/ActiveIn/L1/P") or topic.endswith("/vebus/276/Ac/ActiveIn/P"):
                 self.grid_p = float(val) if val is not None else self.grid_p
@@ -848,6 +843,18 @@ class CasetaGuardian:
 
     def run(self):
         log.info(f"🚀 Iniciant Caseta Guardian (Cerbo IP: {CERBO_IP})...")
+
+        import signal
+        def sig_handler(signum, frame):
+            log.info(f"🛑 Rebut senyal {signum}. Guardant stats a disc...")
+            try:
+                self.save_daily_stats()
+            except Exception:
+                pass
+            self.running = False
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, sig_handler)
+        signal.signal(signal.SIGINT, sig_handler)
         
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_message = self.on_mqtt_message
@@ -860,7 +867,7 @@ class CasetaGuardian:
             
         # Subscripcions quirúrgiques per eliminar el 70% del soroll MQTT innecessari
         self.client.subscribe("N/+/battery/512/#")
-        self.client.subscribe("N/+/pvinverter/31/#")
+        self.client.subscribe("N/+/pvinverter/#")
         self.client.subscribe("N/+/system/0/#")
         self.client.subscribe("N/+/vebus/276/#")
         self.client.subscribe("caseta/#")
