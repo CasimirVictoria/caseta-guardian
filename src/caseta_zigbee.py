@@ -235,6 +235,7 @@ class ZigbeeManager:
             return
         try:
             ieee_str = str(dev.ieee)
+            new_binds = 0
             for ep in dev.endpoints.values():
                 for cl_dict in (getattr(ep, "in_clusters", {}), getattr(ep, "out_clusters", {})):
                     for cid, cl in cl_dict.items():
@@ -242,7 +243,9 @@ class ZigbeeManager:
                         if bind_key not in self.bound_clusters:
                             cl.add_listener(ClusterListener(self, cl))
                             self.bound_clusters.add(bind_key)
-            log.info(f"Listeners vinculats als clústers del dispositiu {dev.ieee} ({getattr(dev, 'model', 'Device')})")
+                            new_binds += 1
+            if new_binds > 0:
+                log.info(f"Listeners vinculats als clústers del dispositiu {dev.ieee} ({getattr(dev, 'model', 'Device')})")
         except Exception as e:
             log.error("Error vinculant listeners: %s", e)
 
@@ -333,8 +336,12 @@ class ZigbeeManager:
         hora_str = ara.strftime("%H:%M")
         s["ultima_actualitzacio"] = ara.strftime("%Y-%m-%d %H:%M:%S")
 
+        # Extreiem l'ID numèric real (ZCLAttributeDef.id o int)
+        aid = int(getattr(attr_id, "id", attr_id))
+        cid = getattr(cluster, "cluster_id", 0)
+
         # 1. Mesura de Temperatura (0x0402)
-        if cluster.cluster_id == 0x0402 and attr_id == 0:
+        if cid == 0x0402 and aid == 0:
             temp_c = self.parse_temperature(value)
             if temp_c is not None:
                 s["temperatura"] = temp_c
@@ -351,7 +358,7 @@ class ZigbeeManager:
                 self.publish_clima_telemetry()
 
         # 2. Mesura d'Humitat Relativa (0x0405)
-        elif cluster.cluster_id == 0x0405 and attr_id == 0:
+        elif cid == 0x0405 and aid == 0:
             hum_pct = self.parse_humidity(value)
             if hum_pct is not None:
                 s["humitat"] = hum_pct
@@ -363,7 +370,7 @@ class ZigbeeManager:
                 self.publish_clima_telemetry()
 
         # 3. Mesura d'Il·luminació (0x0400)
-        elif cluster.cluster_id == 0x0400 and attr_id == 0:
+        elif cid == 0x0400 and aid == 0:
             lux = self.parse_lux(value)
             s["lux"] = lux
             if lux > s.get("lux_max", 0):
@@ -373,17 +380,17 @@ class ZigbeeManager:
             self.publish_clima_telemetry()
 
         # 4. Presència / Moviment (0x0406 / 0x0500)
-        elif cluster.cluster_id in (0x0406, 0x0500) and attr_id in (0, 2):
+        elif cid in (0x0406, 0x0500) and aid in (0, 2):
             s["presencia"] = bool(value & 1)
             log.info(f"🚶 Presència per atribut ({s['nom']}): {s['presencia']}")
             self.publish_clima_telemetry()
 
         # 5. Nivell de Pila / Bateria (0x0001)
-        elif cluster.cluster_id == 0x0001:
-            if attr_id == 0x0021:  # Battery percentage
+        elif cid == 0x0001:
+            if aid in (0x0021, 33):  # Battery percentage
                 s["bateria"] = round(value / 2.0)
                 self.publish_clima_telemetry()
-            elif attr_id == 0x0020: # Voltage in decivolts
+            elif aid in (0x0020, 32): # Voltage in decivolts
                 volt = value / 10.0
                 pct = max(0, min(100, round((volt - 2.0) / 1.0 * 100)))
                 if s["bateria"] is None:
