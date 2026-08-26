@@ -169,6 +169,7 @@ class CasetaGuardian:
         self.last_presence_seen_time = time.time()
         self.ac_current_power = 1
         self.ac_current_temp = 26
+        self.ac_turned_off_by_guardian = False
         # Termo Elèctric (Tuya Plug)
         self.last_termo_update_time = 0.0
         self.termo_status = {}
@@ -600,7 +601,14 @@ class CasetaGuardian:
             if self.ac_current_power != 0:
                 self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI Esglaó 1: Bateria <50% -> Apagat de l'AC")
                 self.send_notification("❄️ Escut SAI Esglaó 1", "Bateria <50%! S'ha apagat l'AC automàticament per protegir la reserva nocturna!", "default", "snowflake")
+                self.ac_turned_off_by_guardian = True
             return
+
+        # Si l'AC estava apagat pel Guardià i la bateria ja ha superat el 50%, restablim automàticament
+        if self.soc >= 50.0 and self.ac_turned_off_by_guardian and self.ac_current_power == 0:
+            log.info(f"🔄 Bateria recuperada ({self.soc:.1f}% >= 50%). Restablint AC automàticament...")
+            self.send_notification("❄️ Restabliment Climatització", f"Bateria recuperada ({self.soc:.1f}% >= 50%)! S'ha reprès l'AC automàticament.", "default", "snowflake")
+            self.ac_turned_off_by_guardian = False
 
         # ⚙️ LLEI 4: Protecció del Compressor i Anti-Flapping (mínim 10 minuts)
         if now - self.last_ac_command_time < 600:
