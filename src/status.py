@@ -235,66 +235,13 @@ def main():
     now_ts = datetime.datetime.now().strftime("%d/%m/%Y - %H:%M:%S")
     print(f"{DIM}🕒 Registre en directe: {now_ts}{RESET}\n")
     
-    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima = get_telemetry()
+    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima, mqtt_inforatge = get_telemetry()
     if not data or not portal:
         print(f"{RED}No s'han pogut obtenir dades del Cerbo GX.{RESET}\n")
         return
 
     forecast = get_forecast(mqtt_forecast)
     daily_stats = get_daily_stats(mqtt_stats)
-
-    soc = data.get(f"N/{portal}/battery/512/Soc") or 0.0
-    soh = data.get(f"N/{portal}/battery/512/Soh") or 90.0
-    bat_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage") or 0.0
-    bat_i = data.get(f"N/{portal}/battery/512/Dc/0/Current") or 0.0
-    bat_p = data.get(f"N/{portal}/battery/512/Dc/0/Power") or 0.0
-    bat_temp = data.get(f"N/{portal}/battery/512/Dc/0/Temperature") or 0.0
-    cell_max = data.get(f"N/{portal}/battery/512/System/MaxCellVoltage")
-    cell_min = data.get(f"N/{portal}/battery/512/System/MinCellVoltage")
-    
-    solar_p = data.get(f"N/{portal}/pvinverter/31/Ac/Power") or 0.0
-    ac_loads = data.get(f"N/{portal}/system/0/Ac/Consumption/L1/Power")
-    if ac_loads is None:
-        ac_loads = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/P")
-    if ac_loads is None:
-        ac_loads = data.get(f"N/{portal}/vebus/276/Ac/Out/P") or 0.0
-
-    grid_p = data.get(f"N/{portal}/system/0/Ac/Grid/L1/Power")
-    if grid_p is None:
-        grid_p = data.get(f"N/{portal}/system/0/Ac/ActiveIn/L1/Power")
-    if grid_p is None:
-        grid_p = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/P")
-    if grid_p is None:
-        grid_p = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/P")
-
-    grid_v = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/V") or 220.0
-    vebus_mode = data.get(f"N/{portal}/vebus/276/Mode")
-    ac_freq = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/F") or 50.0
-
-    kwh_actual = NET_CAPACITY_KWH * (soc / 100.0)
-    kwh_fins_tall = max(0.0, NET_CAPACITY_KWH * ((soc - SHUTDOWN_SOC_PERCENT) / 100.0))
-    kwh_marge_sai = max(0.0, NET_CAPACITY_KWH * ((soc - SAI_TARGET_RESERVE_SOC) / 100.0))
-
-    soc_str = f"{soc:.1f}%"
-    soc_color = GREEN if soc >= 80 else (YELLOW if soc >= 65 else RED)
-    
-    bat_p_str = f"{bat_p:+.0f} W"
-    bat_i_str = f"{bat_i:+.1f} A"
-    bat_state = f"{GREEN}Carregant{RESET}" if bat_i > 0.5 else (f"{YELLOW}Descarregant{RESET}" if bat_i < -0.5 else f"{BLUE}Repòs / Balancejant{RESET}")
-    
-    delta_v_val = (cell_max - cell_min)*1000 if (cell_max and cell_min) else None
-    if delta_v_val is not None:
-        delta_color = GREEN if delta_v_val <= 15 else (YELLOW if delta_v_val <= 35 else RED)
-        delta_v_str = f"{delta_color}{delta_v_val:.0f} mV{RESET}"
-    else:
-        delta_v_str = "N/A"
-
-    mode_map = {1: "Charger Only", 2: "Inverter Only (Aïllat)", 3: "ON (Connectat a Xarxa)", 4: "OFF"}
-    mode_str = mode_map.get(vebus_mode, f"Mode {vebus_mode}")
-    mode_color = CYAN if vebus_mode == 2 else GREEN
-
-    if grid_p is None or vebus_mode == 2:
-        grid_status = f"{CYAN}Desconnectada (Zero Abocament 100% / 0 W){RESET}"
     soc = data.get(f"N/{portal}/battery/512/Soc")
     soh = data.get(f"N/{portal}/battery/512/Soh")
     pylon_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage")
