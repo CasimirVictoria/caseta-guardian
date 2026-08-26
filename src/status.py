@@ -90,6 +90,7 @@ def get_telemetry():
     mqtt_stats = [None]
     mqtt_forecast = [None]
     mqtt_clima = [None]
+    mqtt_inforatge = [None]
 
     def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("N/+/battery/512/#")
@@ -110,6 +111,8 @@ def get_telemetry():
                 mqtt_stats[0] = val
             elif "caseta/forecast" in msg.topic:
                 mqtt_forecast[0] = val
+            elif "caseta/inforatge" in msg.topic:
+                mqtt_inforatge[0] = val
             elif "caseta/clima" in msg.topic:
                 raw_json = json.loads(msg.payload.decode())
                 mqtt_clima[0] = raw_json.get("value") if isinstance(raw_json, dict) and "value" in raw_json else raw_json
@@ -124,7 +127,7 @@ def get_telemetry():
         client.connect(CERBO_IP, 1883, 2)
     except Exception as e:
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
-        return {}, None, None, None, None
+        return {}, None, None, None, None, None
 
     client.loop_start()
     start = time.time()
@@ -143,7 +146,7 @@ def get_telemetry():
         
     client.loop_stop()
     client.disconnect()
-    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0]
+    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0], mqtt_inforatge[0]
 
 def get_forecast(mqtt_forecast=None):
     if mqtt_forecast:
@@ -292,98 +295,153 @@ def main():
 
     if grid_p is None or vebus_mode == 2:
         grid_status = f"{CYAN}Desconnectada (Zero Abocament 100% / 0 W){RESET}"
-    elif grid_p < -50:
-        grid_status = f"{YELLOW}Abocant cap enfora ({abs(grid_p):.0f} W){RESET}"
-    elif grid_p > 50:
-        grid_status = f"{BLUE}Important del carrer ({grid_p:.0f} W){RESET}"
-    else:
-        grid_status = f"{GREEN}Equilibrada / Neutre ({grid_p:.0f} W){RESET}"
-
-    print("┌" + "─" * (BOX_WIDTH + 2) + "┐")
-    print(box_line(f"🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}"))
-    print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc_str:<6}{RESET} [{bat_state}]  (SoH BMS: {soh:.0f}%)"))
-    print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actual:.2f} kWh{RESET} actuals | {GREEN}{kwh_fins_tall:.2f} kWh útils (tall 10%){RESET}"))
-    print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_marge_sai:.2f} kWh lliures{RESET} (abans del sòl del 65%)"))
-    print(box_line(f"   • Tensió i Corrent:        {bat_v:.2f} V  |  {bat_i_str} ({bat_p_str})"))
-    cell_min_str = f"{cell_min:.3f} V" if cell_min is not None else "N/A"
-    cell_max_str = f"{cell_max:.3f} V" if cell_max is not None else "N/A"
-    print(box_line(f"   • Cel·les (Min / Màx):     {cell_min_str} / {cell_max_str} (ΔV = {delta_v_str})"))
-    print(box_line(f"   • Temperatura BMS:         {bat_temp:.1f} ºC"))
+    soc = data.get(f"N/{portal}/battery/512/Soc")
+    soh = data.get(f"N/{portal}/battery/512/Soh")
+    pylon_v = data.get(f"N/{portal}/battery/512/Dc/0/Voltage")
+    pylon_i = data.get(f"N/{portal}/battery/512/Dc/0/Current")
+    pylon_p = data.get(f"N/{portal}/battery/512/Dc/0/Power")
+    pylon_t = data.get(f"N/{portal}/battery/512/Dc/0/Temperature")
+    cell_min_v = data.get(f"N/{portal}/battery/512/System/MinCellVoltage")
+    cell_max_v = data.get(f"N/{portal}/battery/512/System/MaxCellVoltage")
     
+    pv_p = data.get(f"N/{portal}/pvinverter/20/Ac/Power") or data.get(f"N/{portal}/system/0/Ac/PvOnOutput/L1/Power") or 0.0
+    ac_loads = (
+        data.get(f"N/{portal}/system/0/Ac/Consumption/L1/Power")
+        or data.get(f"N/{portal}/system/0/Ac/ConsumptionOnOutput/L1/Power")
+        or data.get(f"N/{portal}/vebus/276/Ac/Out/L1/P")
+        or data.get(f"N/{portal}/vebus/276/Ac/Out/P")
+        or 0.0
+    )
+    freq = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/F") or 50.0
+    
+    grid_p = (
+        data.get(f"N/{portal}/system/0/Ac/Grid/L1/Power")
+        or data.get(f"N/{portal}/system/0/Ac/ActiveIn/L1/Power")
+        or data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/P")
+        or data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/P")
+        or 0.0
+    )
+    grid_v = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/V") or data.get(f"N/{portal}/vebus/276/Ac/Out/L1/V") or 230.0
+    multi_mode = data.get(f"N/{portal}/vebus/276/Mode")
+    
+    if soc is None:
+        print(f"{RED}No s'han pogut llegir les dades de bateria.{RESET}\n")
+        return
+
+    # Càlculs de seguretat i energia
+    kwh_actuals = (soc / 100.0) * USABLE_CAPACITY_KWH
+    kwh_utils = max(0.0, ((soc - HARD_CUTOFF_SOC) / 100.0) * USABLE_CAPACITY_KWH)
+    kwh_fins_escut = max(0.0, ((soc - RESERVE_SOC) / 100.0) * USABLE_CAPACITY_KWH)
+
+    # 1. BATERIA
+    print("┌" + "─" * (BOX_WIDTH + 2) + "┤".replace("┤", "┐"))
+    print(box_line(f"🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}"))
+    
+    soc_color = GREEN if soc >= 70 else (YELLOW if soc >= 40 else RED)
+    status_str = "[Carregant]" if pylon_i and pylon_i > 0.5 else ("[Descarregant]" if pylon_i and pylon_i < -0.5 else "[En Repòs]")
+    soh_str = f"  (SoH BMS: {soh:.0f}%)" if soh is not None else ""
+    print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc:.1f}%{RESET}  {status_str}{soh_str}"))
+    print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actuals:.2f} kWh{RESET} actuals | {GREEN}{kwh_utils:.2f} kWh{RESET} útils (tall {HARD_CUTOFF_SOC:.0f}%)"))
+    print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_fins_escut:.2f} kWh{RESET} lliures (abans del sòl del {RESERVE_SOC:.0f}%)"))
+    
+    if pylon_v is not None and pylon_i is not None and pylon_p is not None:
+        print(box_line(f"   • Tensió i Corrent:        {pylon_v:.2f} V  |  {pylon_i:.1f} A ({pylon_p:.0f} W)"))
+        
+    if cell_min_v is not None and cell_max_v is not None:
+        delta_v = (cell_max_v - cell_min_v) * 1000.0
+        dv_color = GREEN if delta_v <= 15 else (YELLOW if delta_v <= 35 else RED)
+        print(box_line(f"   • Cel·les (Min / Màx):     {cell_min_v:.3f} V / {cell_max_v:.3f} V (ΔV = {dv_color}{delta_v:.0f} mV{RESET})"))
+        
+    if pylon_t is not None:
+        print(box_line(f"   • Temperatura BMS:         {pylon_t:.1f} ºC"))
+
+    # 2. SOLAR I CONSUM
     print("├" + "─" * (BOX_WIDTH + 2) + "┤")
     print(box_line(f"☀️ {BOLD}ENERGIA SOLAR & CONSUM DE LA CASETA{RESET}"))
-    print(box_line(f"   • Producció Solar Huawei:  {GREEN}{BOLD}{solar_p:6.1f} W{RESET}"))
-    print(box_line(f"   • Consum Casa (AC Loads):  {YELLOW}{BOLD}{ac_loads:6.1f} W{RESET}"))
-    print(box_line(f"   • Freqüència de CA Caseta: {ac_freq:.2f} Hz"))
+    print(box_line(f"   • Producció Solar Huawei:  {GREEN}{BOLD}{pv_p:>6.1f} W{RESET}"))
+    print(box_line(f"   • Consum Casa (AC Loads):  {YELLOW}{BOLD}{ac_loads:>6.1f} W{RESET}"))
+    print(box_line(f"   • Freqüència de CA Caseta: {freq:.2f} Hz"))
 
+    # 3. MULTIPLUS I XARXA
     print("├" + "─" * (BOX_WIDTH + 2) + "┤")
     print(box_line(f"🔌 {BOLD}INVERSOR MULTIPLUS-II & XARXA EXTERIOR{RESET}"))
-    print(box_line(f"   • Mode MultiPlus:          {mode_color}{BOLD}{mode_str}{RESET}"))
+    mode_desc = "ON (Connectat a Xarxa)" if multi_mode == 3 else f"Mode {multi_mode}"
+    print(box_line(f"   • Mode MultiPlus:          {mode_desc}"))
     print(box_line(f"   • Tensió Xarxa L1:         {grid_v:.1f} V"))
+    
+    if grid_p > 15:
+        grid_status = f"{BLUE}Important de Xarxa ({grid_p:.0f} W){RESET}"
+    elif grid_p < -15:
+        grid_status = f"{MAGENTA}Abocant cap enfora ({-grid_p:.0f} W){RESET}"
+    else:
+        grid_status = f"{GREEN}Equilibrada / Neutre ({grid_p:.0f} W){RESET}"
     print(box_line(f"   • Estat de la Xarxa:       {grid_status}"))
 
-    if daily_stats:
-        sol_kwh = daily_stats.get("solar_kwh_today", 0.0)
-        sol_pic = daily_stats.get("solar_peak_w", 0.0)
-        con_kwh = daily_stats.get("consumption_kwh_today", 0.0)
-        imp_kwh = daily_stats.get("grid_import_kwh_today", 0.0)
-        exp_kwh = daily_stats.get("grid_export_kwh_today", 0.0)
-        cov_pct = daily_stats.get("solar_coverage_percent", 0.0)
-        cost_tot = daily_stats.get("cost_total_today", 0.19)
+    # 4. BALANÇ D'AVUI
+    print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+    print(box_line(f"📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}"))
+    peak_str = f" (Pic màxim: {sol_peak_w:.0f} W)" if sol_peak_w > 0 else ""
+    print(box_line(f"   • Producció Solar Generada:  {GREEN}{BOLD}{sol_kwh_today:.2f} kWh{RESET}{peak_str}"))
+    print(box_line(f"   • Consum Total de la Casa:   {YELLOW}{BOLD}{con_kwh_today:.2f} kWh{RESET} (Cobertura Solar: {CYAN}{cov_pct_today:.1f}%{RESET})"))
+    print(box_line(f"   • Importat de Xarxa:         {BLUE}{imp_kwh_today:.2f} kWh{RESET} | Exportat: {MAGENTA}{exp_kwh_today:.2f} kWh{RESET} (Zero Regal)"))
+    print(box_line(f"   • Cost Total Facturat d'Hui:  {MAGENTA}{BOLD}{cost_today:.2f} €{RESET} (Tarifa 2.0TD - Tot inclòs)"))
 
-        print("├" + "─" * (BOX_WIDTH + 2) + "┤")
-        print(box_line(f"📊 {BOLD}BALANÇ I ENERGIA D'AVUI (Acumulats){RESET}"))
-        print(box_line(f"   • Producció Solar Generada: {GREEN}{BOLD}{sol_kwh:5.2f} kWh{RESET} (Pic màxim: {BOLD}{sol_pic:.0f} W{RESET})"))
-        print(box_line(f"   • Consum Total de la Casa:  {YELLOW}{BOLD}{con_kwh:5.2f} kWh{RESET} (Cobertura Solar: {CYAN}{BOLD}{cov_pct:.1f}%{RESET})"))
-        print(box_line(f"   • Importat de Xarxa:        {BLUE}{BOLD}{imp_kwh:5.2f} kWh{RESET} | Exportat: {GREEN}{BOLD}{exp_kwh:4.2f} kWh (Zero Regal){RESET}"))
-        print(box_line(f"   • Cost Total Facturat d'Hui: {MAGENTA}{BOLD}{cost_tot:5.2f} €{RESET} (Tarifa 2.0TD - Tot inclòs)"))
-
+    # 5. PREVISIÓ I RISC
     if forecast:
-        today_kwh = forecast.get("today_kwh", 0)
-        tomorrow_kwh = forecast.get("tomorrow_kwh", 0)
-        max_t = forecast.get("max_temp_today", 0)
-        sunset_t = forecast.get("sunset_temp", 0)
-        risk = forecast.get("blackout_risk", 0)
+        today_est = forecast.get("today_kwh", 0.0)
+        tomorrow_est = forecast.get("tomorrow_kwh", 0.0)
+        max_t = forecast.get("max_temp_today", 0.0)
+        sunset_t = forecast.get("sunset_temp", 0.0)
+        risk = forecast.get("blackout_risk", 25)
         target_soc = forecast.get("target_reserve_soc", 85)
         
-        risk_color = RED if risk >= 60 else (YELLOW if risk >= 30 else GREEN)
-        risk_label = "🔴 Risc Alt (Alerta Calor)" if risk >= 60 else ("🟡 Risc Mitjà" if risk >= 30 else "🟢 Risc Baix (Normal)")
+        risk_color = GREEN if risk < 35 else (YELLOW if risk < 65 else RED)
+        risk_label = "Risc Baix (Normal)" if risk < 35 else ("Risc Moderat (Atenció)" if risk < 65 else "Risc Alt (Restaura SAI)")
         
         print("├" + "─" * (BOX_WIDTH + 2) + "┤")
         print(box_line(f"🌤️ {BOLD}PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API){RESET}"))
-        print(box_line(f"   • Sol Esperat (Hui / Demà): {GREEN}{BOLD}{today_kwh:.1f} kWh{RESET} / {tomorrow_kwh:.1f} kWh"))
+        print(box_line(f"   • Sol Esperat (Hui / Demà): {today_est:.1f} kWh / {tomorrow_est:.1f} kWh"))
         print(box_line(f"   • Temp. Màx / Ocàs (21h):   {max_t:.1f} ºC / {sunset_t:.1f} ºC"))
         print(box_line(f"   • Índex de Risc de Tall:    {risk_color}{BOLD}{risk_label} ({risk}%){RESET}"))
         print(box_line(f"   • Objectiu Reserva Nocturna:  {BOLD}{target_soc}% de Bateria SAI{RESET}"))
 
-    if mqtt_clima:
-        sensors_dict = mqtt_clima.get("sensors") or {}
+    # 6. CLIMA & BIOCLIMÀTICA (ZIGBEE + INFORATGE)
+    if mqtt_clima or mqtt_inforatge:
+        sensors_dict = (mqtt_clima.get("sensors") if mqtt_clima else {}) or {}
         s1 = sensors_dict.get("sensor_1") or {}
         s2 = sensors_dict.get("sensor_2") or {}
 
-        if s1.get("temperatura") is not None or s2.get("temperatura") is not None:
-            print("├" + "─" * (BOX_WIDTH + 2) + "┤")
-            print(box_line(f"🌡️ {BOLD}CLIMA & BIOCLIMÀTICA (Zigbee Natiu en RAM - 2 Sensors){RESET}"))
-            
-            # Sensor 1: Habitació xiquets (TS0201)
-            if s1.get("temperatura") is not None:
-                t1 = s1.get("temperatura")
-                h1 = s1.get("humitat")
-                bat1 = s1.get("bateria")
-                bat_str1 = f"  [{GREEN}🔋 Pila: {bat1}%{RESET}]" if bat1 is not None else ""
-                print(box_line(f"   • {BOLD}Habitació xiquets:{RESET}     {YELLOW}{BOLD}{t1:.2f} ºC{RESET} | {CYAN}{BOLD}{h1:.1f} %{RESET}{bat_str1}"))
+        print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+        print(box_line(f"🌡️ {BOLD}CLIMA & METEOROLOGIA (Zigbee en RAM + Inforatge Ador){RESET}"))
+        
+        # Sensor 1: Habitació xiquets (TS0201)
+        if s1.get("temperatura") is not None:
+            t1 = s1.get("temperatura")
+            h1 = s1.get("humitat")
+            bat1 = s1.get("bateria")
+            bat_str1 = f"  [{GREEN}🔋 Pila: {bat1}%{RESET}]" if bat1 is not None else ""
+            print(box_line(f"   • {BOLD}Habitació xiquets:{RESET}     {YELLOW}{BOLD}{t1:.2f} ºC{RESET} | {CYAN}{BOLD}{h1:.1f} %{RESET}{bat_str1}"))
 
-            # Sensor 2: Saló (ZG-204ZV)
-            if s2.get("temperatura") is not None:
-                t2 = s2.get("temperatura")
-                h2 = s2.get("humitat")
-                lux2 = s2.get("lux")
-                pres2 = s2.get("presencia")
-                bat2 = s2.get("bateria")
-                pres_str = f"{MAGENTA}{BOLD}🚶 Presència{RESET}" if pres2 else f"{GREEN}🟢 Repòs{RESET}"
-                lux_str = f"{lux2:.0f} Lux" if lux2 is not None else "0 Lux"
-                bat_str2 = f"  [{GREEN}🔋 {bat2}%{RESET}]" if bat2 is not None else ""
-                print(box_line(f"   • {BOLD}Saló (Multisensor):{RESET}    {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str}{bat_str2}"))
+        # Sensor 2: Saló (ZG-204ZV)
+        if s2.get("temperatura") is not None:
+            t2 = s2.get("temperatura")
+            h2 = s2.get("humitat")
+            lux2 = s2.get("lux")
+            pres2 = s2.get("presencia")
+            bat2 = s2.get("bateria")
+            pres_str = f"{MAGENTA}{BOLD}🚶 Presència{RESET}" if pres2 else f"{GREEN}🟢 Repòs{RESET}"
+            lux_str = f"{lux2:.0f} Lux" if lux2 is not None else "0 Lux"
+            bat_str2 = f"  [{GREEN}🔋 {bat2}%{RESET}]" if bat2 is not None else ""
+            print(box_line(f"   • {BOLD}Saló (Multisensor):{RESET}    {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str}{bat_str2}"))
+
+        # Inforatge Ador
+        if mqtt_inforatge and mqtt_inforatge.get("temperatura") is not None:
+            t_ext = mqtt_inforatge.get("temperatura")
+            h_ext = mqtt_inforatge.get("humitat")
+            v_vel = mqtt_inforatge.get("vent_vel", 0)
+            v_dir = mqtt_inforatge.get("vent_dir", "")
+            p_bar = mqtt_inforatge.get("pressio")
+            print(box_line(f"   • {BOLD}Exterior Ador (Oficial):{RESET} {BLUE}{BOLD}{t_ext:.1f} ºC{RESET} | {CYAN}{BOLD}{h_ext:.0f} %{RESET} | {v_vel} km/h {v_dir} | {p_bar} hPa"))
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     print(f"  Guardià Natiu (caseta-guardian): {GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}")

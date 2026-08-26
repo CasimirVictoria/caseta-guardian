@@ -20,6 +20,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import ssl
 import sys
 import time
@@ -133,6 +134,7 @@ class CasetaGuardian:
         self.low_voltage_start_time = None
         self.last_mode_switch_time = 0.0
         self.last_forecast_time = 0.0
+        self.last_inforatge_time = 0.0
         self.last_stats_calc_time = 0.0
         self.last_stats_publish_time = 0.0
         self.last_keepalive_time = 0.0
@@ -339,6 +341,65 @@ class CasetaGuardian:
                 
         except Exception as e:
             log.warning(f"Error actualitzant Open-Meteo: {e}")
+
+    def update_inforatge(self):
+        """Consulta Inforatge Ador cada 15 minuts per obtenir condicions hiper-locals reals."""
+        now = time.time()
+        if now - self.last_inforatge_time < 900:  # Cada 15 minuts
+            return
+            
+        self.last_inforatge_time = now
+        try:
+            url = "https://inforatge.com/meteo-ador"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=8) as rep:
+                html = rep.read().decode("utf-8")
+
+            temp_m = re.search(r'class="blocValorTM">(\d+)<span class="vPetit">,(\d+)</span>', html)
+            temp = float(f"{temp_m.group(1)}.{temp_m.group(2)}") if temp_m else None
+
+            hum_m = re.search(r'class="blocVariableHR">.*?class="blocValor">(\d+)</div>', html, re.S)
+            hum = float(hum_m.group(1)) if hum_m else None
+
+            press_m = re.search(r'class="blocVariablePA">.*?class="blocValor">(\d+)', html, re.S)
+            press = int(press_m.group(1)) if press_m else None
+
+            vent_m = re.search(r'class="blocVariableVV">.*?class="blocValor">(\d+)<span class="vPetit">\s*([^<]+)</span>', html, re.S)
+            vent_vel = int(vent_m.group(1)) if vent_m else 0
+            vent_dir = vent_m.group(2).strip() if vent_m else ""
+
+            pluja_m = re.search(r'class="blocVariablePL">.*?class="blocValor">(\d+),(\d+)</div>', html, re.S)
+            pluja = float(f"{pluja_m.group(1)}.{pluja_m.group(2)}") if pluja_m else 0.0
+
+            tmax_m = re.search(r'class="boxpetitkTX negreT"><span class="varmobil">m&agrave;x</span>(\d+),(\d+)', html)
+            tmax = float(f"{tmax_m.group(1)}.{tmax_m.group(2)}") if tmax_m else None
+
+            tmin_m = re.search(r'class="boxpetitkTM negreT"><span class="varmobil">m&iacute;n</span>(\d+),(\d+)', html)
+            tmin = float(f"{tmin_m.group(1)}.{tmin_m.group(2)}") if tmin_m else None
+
+            inforatge_data = {
+                "temperatura": temp,
+                "humitat": hum,
+                "pressio": press,
+                "vent_vel": vent_vel,
+                "vent_dir": vent_dir,
+                "pluja_avui": pluja,
+                "t_max_avui": tmax,
+                "t_min_avui": tmin,
+                "timestamp": now,
+                "hora_str": get_madrid_now().strftime("%H:%M")
+            }
+
+            with open("/tmp/caseta_inforatge_cache.json", "w") as f:
+                json.dump(inforatge_data, f)
+
+            if self.client:
+                self.client.publish("caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
+                if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                    self.client.publish(f"N/{self.portal_id}/caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
+            log.info(f"📍 Inforatge Ador: Ext {temp}ºC | Hum {hum}% | Vent {vent_vel} km/h {vent_dir} | Pressió {press} hPa")
+        except Exception as e:
+            log.warning(f"Error consultant Inforatge Ador: {e}")
 
     def trigger_tuya_ac_off(self):
         if self.tuya_ac_turned_off_today:
@@ -736,6 +797,7 @@ class CasetaGuardian:
         
         self.sync_cerbo_min_soc()
         self.update_energy_forecast()
+        self.update_inforatge()
         
         log.info("🛡️ Guardià en línia i vigilant telemetria en directe!")
         
@@ -750,6 +812,7 @@ class CasetaGuardian:
                     
                 self.sync_cerbo_min_soc(now_madrid)
                 self.update_energy_forecast()
+                self.update_inforatge()
                 self.update_energy_integrals(now_madrid)
                 self.evaluate_state_machine()
                 

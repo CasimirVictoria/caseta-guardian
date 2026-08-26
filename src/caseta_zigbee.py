@@ -430,6 +430,40 @@ class ZigbeeManager:
             except Exception as e:
                 log.error("Error guardant resum diari de clima: %s", e)
 
+    def sync_live_cache(self):
+        if not self.app:
+            return
+        for dev in self.app.devices.values():
+            ieee_str = str(dev.ieee)
+            if ieee_str == "00:12:4b:00:30:db:ef:c5":
+                continue
+            s_key = self.get_sensor_key(ieee_str)
+            s = self.sensors[s_key]
+            for ep in dev.endpoints.values():
+                for cid, cl in getattr(ep, "in_clusters", {}).items():
+                    if hasattr(cl, "_attr_cache"):
+                        if cid == 1026:  # Temp
+                            raw_t = cl._attr_cache.get(0)
+                            if raw_t is not None:
+                                t = self.parse_temperature(raw_t)
+                                if t is not None:
+                                    s["temperatura"] = t
+                        elif cid == 1029:  # Humitat
+                            raw_h = cl._attr_cache.get(0)
+                            if raw_h is not None:
+                                h = self.parse_humidity(raw_h)
+                                if h is not None:
+                                    s["humitat"] = h
+                        elif cid == 1024:  # Lux
+                            raw_l = cl._attr_cache.get(0)
+                            if raw_l is not None:
+                                s["lux"] = self.parse_lux(raw_l)
+                        elif cid == 1:  # Pila
+                            raw_b = cl._attr_cache.get(33)
+                            if raw_b is not None:
+                                s["bateria"] = round(raw_b / 2.0)
+        self.publish_clima_telemetry()
+
     def attach_all_devices(self):
         if not self.app:
             return
@@ -504,6 +538,7 @@ async def main():
 
     while manager.running:
         manager.attach_all_devices()
+        manager.sync_live_cache()
         manager.check_midnight_rollup()
         await asyncio.sleep(10)
 
