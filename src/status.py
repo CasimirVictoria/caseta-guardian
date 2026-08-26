@@ -329,7 +329,13 @@ def main():
     # 3. MULTIPLUS I XARXA
     print("├" + "─" * (BOX_WIDTH + 2) + "┤")
     print(box_line(f"🔌 {BOLD}INVERSOR MULTIPLUS-II & XARXA EXTERIOR{RESET}"))
-    mode_desc = "ON (Connectat a Xarxa)" if multi_mode == 3 else f"Mode {multi_mode}"
+    mode_map = {
+        1: "Només Carregador",
+        2: "Sols Inverter",
+        3: "ON (Connectat a Xarxa)",
+        4: "OFF (Apagat)"
+    }
+    mode_desc = mode_map.get(multi_mode, f"Mode {multi_mode}")
     print(box_line(f"   • Mode MultiPlus:          {mode_desc}"))
     print(box_line(f"   • Tensió Xarxa L1:         {grid_v:.1f} V"))
     
