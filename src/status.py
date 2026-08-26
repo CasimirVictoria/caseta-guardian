@@ -131,7 +131,7 @@ def get_telemetry():
 
     client.loop_start()
     start = time.time()
-    while time.time() - start < 0.8:
+    while time.time() - start < 1.5:
         time.sleep(0.02)
         portal = found_portal[0]
         if (
