@@ -873,14 +873,14 @@ class CasetaGuardian:
         if 0 < self.soc < 50.0 and self.ac_current_power != 0:
             self.send_ac_tuya_command(power=0, reason="❄️ Escut SAI Esglaó 1: Bateria <50% -> Apagat de l'AC")
 
-        # 🚨 ESGGLO 2 (SoC < 45%): Tall Crític de Càrregues Grans (AC + Termo) per blindar 18h de SAI
-        if 0 < self.soc < 45.0:
+        # 🚨 ESGGLO 2 (SoC < 35%): Tall Crític del Termo per blindar >10h de SAI (permet desinfecció anti-legionel·la a 60ºC)
+        if 0 < self.soc < 35.0:
             if self.ac_current_power != 0:
-                self.send_ac_tuya_command(power=0, reason="🚨 Blindatge Total: Bateria <45% -> AC forçat a OFF")
+                self.send_ac_tuya_command(power=0, reason="🚨 Blindatge Total: Bateria <35% -> AC forçat a OFF")
             termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
             if termo_on and not getattr(self, "termo_cut_off_today", False):
-                self.send_termo_tuya_command(power=False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Termo")
-                self.send_notification("🚨 Blindatge Total SAI", "Bateria <45%! S'ha desconnectat el termo i l'AC per blindar 18h de reserva a la nevera i router!", "high", "zap")
+                self.send_termo_tuya_command(power=False, reason="🚨 Blindatge Total: Bateria <35% -> Desconnexió Termo")
+                self.send_notification("🚨 Blindatge Total SAI", "Bateria <35%! S'ha desconnectat el termo per blindar la reserva de seguretat nocturna.", "high", "zap")
                 self.termo_cut_off_today = True
 
         # ⚡ PROTECCIÓ C-RATE A: Pic de Sobrecàrrega 1C (>=70A / ~3.5kW durant >15 segons)
