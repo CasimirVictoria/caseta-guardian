@@ -147,38 +147,44 @@ $ caseta
 
 ⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡
 Connectant a Cerbo GX (192.168.1.106)...
-🕒 Registre en directe: 25/08/2026 - 16:25:09
+🕒 Registre en directe: 26/08/2026 - 10:31:18
 
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
-│    • Estat de Càrrega (SoC):  88.0%  [Repòs / Balancejant]  (SoH BMS: 90%)   │
-│    • Energia Disponible:      2.81 kWh actuals | 2.49 kWh útils (tall 10%)   │
-│    • Marge fins a Escut SAI:  0.74 kWh lliures (abans del sòl del 65%)       │
-│    • Tensió i Corrent:        49.93 V  |  +0.3 A (+14 W)                     │
-│    • Cel·les (Min / Màx):     3.327 V / 3.330 V (ΔV = 3 mV)                  │
-│    • Temperatura BMS:         32.6 ºC                                        │
+│    • Estat de Càrrega (SoC):  78.0%  [Carregant]  (SoH BMS: 90%)             │
+│    • Energia Disponible:      2.49 kWh actuals | 2.17 kWh útils (tall 10%)   │
+│    • Marge fins a Escut SAI:  0.42 kWh lliures (abans del sòl del 65%)       │
+│    • Tensió i Corrent:        49.50 V  |  1.1 A (54 W)                       │
+│    • Cel·les (Min / Màx):     3.294 V / 3.309 V (ΔV = 15 mV)                 │
+│    • Temperatura BMS:         29.6 ºC                                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                       │
-│    • Producció Solar Huawei:   757.4 W                                       │
-│    • Consum Casa (AC Loads):   759.5 W                                       │
+│    • Producció Solar Huawei:   618.7 W                                       │
+│    • Consum Casa (AC Loads):   576.7 W                                       │
 │    • Freqüència de CA Caseta: 49.95 Hz                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                    │
 │    • Mode MultiPlus:          ON (Connectat a Xarxa)                         │
-│    • Tensió Xarxa L1:         225.1 V                                        │
-│    • Estat de la Xarxa:       Important del carrer (58 W)                    │
+│    • Tensió Xarxa L1:         223.2 V                                        │
+│    • Estat de la Xarxa:       Important de Xarxa (46 W)                      │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 📊 BALANÇ I ENERGIA D'AVUI (Acumulats)                                       │
-│    • Producció Solar Generada:  5.92 kWh (Pic màxim: 1065 W)                 │
-│    • Consum Total de la Casa:   8.45 kWh (Cobertura Solar: 70.1%)            │
-│    • Importat de Xarxa:         3.22 kWh | Exportat: 0.01 kWh (Zero Regal)   │
-│    • Cost Total Facturat d'Hui:  0.48 € (Tarifa 2.0TD - Tot inclòs)          │
+│    • Producció Solar Generada:  0.10 kWh (Pic màxim: 613 W)                  │
+│    • Consum Total de la Casa:   0.65 kWh (Cobertura Solar: 15.0%)            │
+│    • Importat de Xarxa:         0.44 kWh | Exportat: 0.00 kWh (Zero Regal)   │
+│    • Cost Total Facturat d'Hui:  0.23 € (Tarifa 2.0TD - Tot inclòs)          │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                            │
-│    • Sol Esperat (Hui / Demà): 4.8 kWh / 7.8 kWh                             │
-│    • Temp. Màx / Ocàs (21h):   32.9 ºC / 30.6 ºC                             │
-│    • Índex de Risc de Tall:    🟡 Risc Mitjà (35%)                           │
-│    • Objectiu Reserva Nocturna:  85.0% de Bateria SAI                        │
+│    • Sol Esperat (Hui / Demà): 5.6 kWh / 7.0 kWh                             │
+│    • Temp. Màx / Ocàs (21h):   31.7 ºC / 28.6 ºC                             │
+│    • Índex de Risc de Tall:    Risc Baix (Normal) (25%)                      │
+│    • Objectiu Reserva Nocturna:  75.0% de Bateria SAI                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 🌡️ CLIMA & METEOROLOGIA (Zigbee en RAM + Inforatge Ador)                     │
+│    • Habitació xiquets:     28.80 ºC | 60.0 %  [🔋 Pila: 100%]               │
+│    • Saló (Multisensor):    28.20 ºC | 58.0 % | 552 Lux | 🚶 Presència  [🔋 20%] │
+│    • Climatització AC:      ❄️ Mode Fred a 26 ºC [Encès]                     │
+│    • Exterior Ador (Oficial): 25.2 ºC | 79 % | 2 km/h ESE | 1016 hPa         │
 └──────────────────────────────────────────────────────────────────────────────┘
   Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT A CERBO GX (Venus OS)
 ```
