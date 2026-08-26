@@ -463,11 +463,13 @@ class CasetaGuardian:
                 time.sleep(0.3)
                 send_sub_cmd("mode", mode)
                 time.sleep(0.3)
-                res = send_sub_cmd("temp", int(temp))
+                send_sub_cmd("temp", int(temp))
+                time.sleep(0.3)
+                res = send_sub_cmd("wind", fan)  # 0 = Auto
                 self.ac_current_power = 1
                 self.ac_current_temp = int(temp)
                 mode_str = "Fred" if mode == 0 else "Auto"
-                log.info(f"❄️ [CLIMA AUTÒNOM] AC Consigna {temp}ºC ({reason}): {res}")
+                log.info(f"❄️ [CLIMA AUTÒNOM] AC Consigna {temp}ºC + Ventilador Auto ({reason}): {res}")
 
             # Publicació MQTT
             ac_payload = {
