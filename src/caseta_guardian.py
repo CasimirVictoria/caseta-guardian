@@ -851,16 +851,22 @@ class CasetaGuardian:
                     target = 800.0
                     reason = f"☁️ Dia Ennuvolat ({today_est:.1f}kWh) & Termo ({termo_p:.0f}W) -> Setpoint 800W (Protecció Sense Sol)"
 
-        # ☕ 2. GESTIÓ AMB TERMO EN REPÒS
+        # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
-            if self.soc >= 90.0:
+            # ☀️ A. Si hi ha generació solar abundant (Sol >= 400W o Sol >= Consum Casa):
+            if self.pv_p >= 400.0 or (self.pv_p >= self.ac_loads and self.pv_p > 150.0):
                 target = 50.0
-                reason = f"🔋 Bateria Plena ({self.soc:.1f}% >= 90%) -> Setpoint 50W (Estalvi Màxim)"
-            elif self.soc < 87.0:
+                reason = f"☀️ Excedent Solar Diürn ({self.pv_p:.0f}W) -> Setpoint 50W (Aprofitament Solar Màxim)"
+            # 🔋 B. Si la bateria està a la zona alta (SoC >= 88%):
+            elif self.soc >= 88.0:
+                target = 50.0
+                reason = f"🔋 Bateria Alta ({self.soc:.1f}% >= 88%) -> Setpoint 50W (Estalvi Màxim)"
+            # 🌙 C. Sense sol diürn / nocturn i Bateria Baixa (<85%):
+            elif self.soc < 85.0:
                 target = 200.0
-                reason = f"⚡ Bateria en càrrega ({self.soc:.1f}% < 87%) -> Setpoint 200W (Amortidor Basal)"
+                reason = f"⚡ Bateria en descàrrega sense sol ({self.soc:.1f}% < 85%) -> Setpoint 200W (Amortidor Basal)"
             else:
-                target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 200.0
+                target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 100.0
                 reason = "Estable"
 
         if self.last_grid_setpoint != target:
