@@ -83,7 +83,7 @@ def box_line(content: str) -> str:
 def get_telemetry():
     if mqtt is None:
         print(f"{RED}Error: paho-mqtt no està instal·lat.{RESET}")
-        return {}, None, None, None
+        return {}, None, None, None, None, None, None, None, None
 
     data = {}
     found_portal = [PORTAL_ID]
