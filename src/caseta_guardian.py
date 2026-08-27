@@ -833,8 +833,8 @@ class CasetaGuardian:
     def sync_grid_setpoint(self):
         """Modula dinàmicament el Grid Setpoint de Victron ESS:
         - Termo Actiu (>=500W): 800.0 W (Suport de xarxa per protegir la bateria del cicle de 1.250W)
-        - Termo en Repòs & SoC < 88%: 150.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
-        - Termo en Repòs & SoC >= 88%: 50.0 W (Reducció d'importació quan la bateria està plena)
+        - Termo en Repòs & SoC < 90%: 200.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
+        - Termo en Repòs & SoC >= 90%: 50.0 W (Reducció d'importació quan la bateria està plena)
         """
         now = time.time()
         if now - self.last_grid_setpoint_eval_time < 30:
@@ -848,14 +848,14 @@ class CasetaGuardian:
         if termo_on and termo_p >= 500.0:
             target = 800.0
             reason = f"♨️ Suport Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W per protegir bateria"
-        elif self.soc >= 88.0:
+        elif self.soc >= 90.0:
             target = 50.0
-            reason = f"🔋 Bateria Plena ({self.soc:.1f}% >= 88%) -> Setpoint reduït a 50W"
-        elif self.soc < 85.0:
-            target = 150.0
-            reason = f"⚡ Bateria en càrrega ({self.soc:.1f}% < 85%) -> Setpoint a 150W (Amortidor)"
+            reason = f"🔋 Bateria Plena ({self.soc:.1f}% >= 90%) -> Setpoint reduït a 50W"
+        elif self.soc < 87.0:
+            target = 200.0
+            reason = f"⚡ Bateria en càrrega ({self.soc:.1f}% < 87%) -> Setpoint a 200W (Amortidor Basal)"
         else:
-            target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 150.0
+            target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 200.0
             reason = "Estable"
 
         if self.last_grid_setpoint != target:
