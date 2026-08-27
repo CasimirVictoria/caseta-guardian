@@ -270,6 +270,7 @@ def main():
     pylon_p = data.get(f"N/{portal}/battery/512/Dc/0/Power")
     pylon_t = data.get(f"N/{portal}/battery/512/Dc/0/Temperature")
     cell_min_v = data.get(f"N/{portal}/battery/512/System/MinCellVoltage")
+    cell_max_v = data.get(f"N/{portal}/battery/512/System/MaxCellVoltage")
     raw_pv = data.get(f"N/{portal}/pvinverter/20/Ac/Power") or data.get(f"N/{portal}/system/0/Ac/PvOnOutput/L1/Power") or 0.0
     # Filtre de soroll d'inversor Huawei en repòs: entre -25W i +20W és 0W real
     pv_p = 0.0 if -25.0 <= raw_pv <= 20.0 else raw_pv
