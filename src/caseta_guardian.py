@@ -630,18 +630,19 @@ class CasetaGuardian:
                 self.ac_current_power = 0
                 mode_str = "Apagat"
                 log.info(f"❄️ [CLIMA AUTÒNOM] AC Power OFF ({reason}): {res}")
+            elif getattr(self, "ac_current_power", 0) == 1:
+                # Si ja està encès, NOMÉS enviem la nova temperatura (1 sol bip suau com el comandament!)
+                res = send_sub_cmd("temp", int(temp))
+                self.ac_current_temp = int(temp)
+                mode_str = "Fred" if mode == 0 else "Auto"
+                log.info(f"❄️ [CLIMA AUTÒNOM] AC Consigna {temp}ºC (1 sol bip) ({reason}): {res}")
             else:
-                send_sub_cmd("power", 1)
-                time.sleep(0.3)
-                send_sub_cmd("mode", mode)
-                time.sleep(0.3)
-                send_sub_cmd("temp", int(temp))
-                time.sleep(0.3)
-                res = send_sub_cmd("wind", fan)  # 0 = Auto
+                # Si estava apagat i l'encenem per primer cop:
+                res = send_sub_cmd("power", 1)
                 self.ac_current_power = 1
                 self.ac_current_temp = int(temp)
                 mode_str = "Fred" if mode == 0 else "Auto"
-                log.info(f"❄️ [CLIMA AUTÒNOM] AC Consigna {temp}ºC + Ventilador Auto ({reason}): {res}")
+                log.info(f"❄️ [CLIMA AUTÒNOM] AC Power ON a {temp}ºC ({reason}): {res}")
 
             # Publicació MQTT
             ac_payload = {
