@@ -719,21 +719,6 @@ class CasetaGuardian:
         if now - self.last_ac_command_time < 600:
             return
 
-        # ♨️ LLEI 2.0: Peak Shaving & Prioritat Termo Elèctric
-        # Si el termo està calfant aigua (>=500W), fixem l'AC a 27ºC per alliberar ~600W elèctrics i evitar sobrecàrregues
-        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
-        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
-        if termo_on and termo_p >= 500.0:
-            if self.ac_current_power != 1 or self.ac_current_temp != 27:
-                self.send_ac_tuya_command(
-                    power=1,
-                    temp=27,
-                    mode=0,
-                    fan=0,
-                    reason=f"♨️ Peak Shaving: Termo actiu ({termo_p:.0f}W) -> AC a 27ºC"
-                )
-            return
-
         hour = now_madrid.hour
         
         # 🌙 LLEI 2.1: Horari Nocturn (23:00 - 07:59h): Confort suau de descans a 26.5ºC
@@ -1108,13 +1093,9 @@ class CasetaGuardian:
                     obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
                     obj.SetValue(dbus.Double(pre_target), dbus_interface="com.victronenergy.BusItem")
                     self.last_grid_setpoint = pre_target
-                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {pre_target:.0f}W i AC modulat a 27ºC. Esperant 4s d'amortidor previ a l'encesa del Termo...")
+                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {pre_target:.0f}W abans d'engegar el Termo...")
                 except Exception as e:
                     log.warning(f"Error establint pre-rampa a D-Bus: {e}")
-
-                # Enviar AC a 27ºC immediatament
-                self.send_ac_tuya_command(power=1, temp=27, mode=0, fan=0, reason="♨️ Pre-Peak Shaving: Preparant encesa de Termo (AC a 27ºC)")
-                time.sleep(4.0)
 
                 self.send_termo_tuya_command(
                     power=True,
