@@ -123,7 +123,8 @@ graph TD
     subgraph DOMOTICA ["🏰 CLIMATE & DOMOTIC CONSUMERS"]
         ZIG_SENS["🌡️ Zigbee 3.0 Multisensors (Living Room + Kids Room)"]
         TUYA_IR["❄️ Tuya IR S06 Blaster -> Air Conditioner"]
-        TERMO_PLUG["♨️ LocalTuya Smart Plug -> Ariston 100L Water Heater (1.25kW)"]
+        TERMO_PLUG["♨️ LocalTuya Smart Plug -> Ariston 100L Water Heater (1.28kW)"]
+        CUINA_PLUG["🥐☕ LocalTuya Dual Plug -> Microwave/Toaster (DPS1) + Coffee Maker (DPS2)"]
         HOUSE_LOADS["💡 Base House Loads (Refrigerator, 4G Router, Lighting)"]
     end
 
@@ -144,6 +145,7 @@ graph TD
     ZIGBEE_DAEMON --> MQTT
     GUARDIAN --> TUYA_IR
     GUARDIAN <--> TERMO_PLUG
+    GUARDIAN <--> CUINA_PLUG
 ```
 
 ---
@@ -154,15 +156,19 @@ This is the exact execution and decision graph processed every second by the Gua
 
 ```mermaid
 flowchart TD
-    START(["🚀 Loop Cycle Start (Every 1s)"]) --> LLEI_SAI{"🚨 Battery SoC < 50%?"}
+    START(["🚀 Loop Cycle Start (Every 1s)"]) --> LLEI_SOC{"🛡️ SoC Defense Matrix"}
 
-    %% ESCUT SAI
-    LLEI_SAI -- "YES (SoC < 50%)" --> AC_OFF["❄️ Turn OFF AC Immediately (SAI Shield)"]
-    AC_OFF --> TERMO_35{"🚨 SoC < 35%?"}
-    TERMO_35 -- "YES" --> TERMO_CUT["🚨 Cut Water Heater in <20ms + Critical Notification"]
-    TERMO_35 -- "NO" --> CHECK_CRATE
+    %% SOC MATRIX
+    LLEI_SOC -- "SoC < 65.0%" --> TERMO_CUT["♨️ Turn OFF Water Heater (Battery Protection)"]
+    TERMO_CUT --> CHECK_AC_SOC{"SoC < 60.0%?"}
+    CHECK_AC_SOC -- "YES" --> AC_CUT["❄️ Turn OFF AC (Auto-restart strictly when SoC >= 65%)"]
+    CHECK_AC_SOC -- "NO" --> CHECK_CRATE
+    AC_CUT --> CHECK_CUINA_SOC{"SoC < 50.0%?"}
+    CHECK_CUINA_SOC -- "YES" --> CUINA_CUT["🥐☕ Emergency Cut Kitchen (Hard UPS Floor)"]
+    CHECK_CUINA_SOC -- "NO" --> CHECK_CRATE
+    CUINA_CUT --> CHECK_CRATE
 
-    LLEI_SAI -- "NO (SoC >= 50%)" --> FREE_COOLING{"🍃 T_ext < 25ºC (>20 min) & T_int < 28ºC?"}
+    LLEI_SOC -- "SoC >= 65.0%" --> FREE_COOLING{"🍃 T_ext < 25ºC (>20 min) & T_int < 28ºC?"}
 
     %% FREE-COOLING
     FREE_COOLING -- "YES" --> AC_FC_OFF["🍃 Turn OFF AC Silently (Zero Notification)"]
@@ -171,7 +177,7 @@ flowchart TD
     FC_REARM -- "YES" --> REARM_AC["Re-activate Climate Control"] --> CHECK_TERMO
     FC_REARM -- "NO" --> CHECK_TERMO
 
-    %% TERMO SURPLUS
+    %% TERMO SURPLUS & DAWN
     CHECK_TERMO{"♨️ Water Heater State"} --> TERMO_ON_CHECK{"Water Heater ON?"}
 
     TERMO_ON_CHECK -- "YES" --> TERMO_P_CHECK{"Power < 50W for > 2 min?"}
@@ -180,14 +186,17 @@ flowchart TD
     TERMO_SOC_PAUSE -- "YES" --> TERMO_PAUSE["⏸️ Cloud Safety Pause (Termo OFF)"]
     TERMO_SOC_PAUSE -- "NO" --> SET_GRID_800["🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
 
-    TERMO_ON_CHECK -- "NO" --> TERMO_START_CHECK{"termo_heated_today = False & <br> SoC >= 83% & Solar >= 500W?"}
-    TERMO_START_CHECK -- "YES" --> TERMO_START["♨️ Turn ON Termo via LocalTuya <br> 🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
+    TERMO_ON_CHECK -- "NO" --> TERMO_DAWN{"Dawn (05:15h) & Solar Forecast < 3.5 kWh?"}
+    TERMO_DAWN -- "YES" --> TERMO_START_DAWN["♨️ Turn ON Termo via Cheap P3 Grid (Min SoC 100%)"]
+    TERMO_DAWN -- "NO" --> TERMO_START_CHECK{"termo_heated_today = False & <br> SoC >= 83% & Solar >= 500W?"}
+    TERMO_START_CHECK -- "YES" --> TERMO_START["♨️ Turn ON Termo via Solar Surplus <br> 🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
     TERMO_START_CHECK -- "NO" --> AC_CLIMATE_LADDER
 
     %% ESCALA CLIMA AC
     AC_CLIMATE_LADDER{"❄️ Daytime Climate Ladder"}
     TERMO_FINISH --> AC_CLIMATE_LADDER
     TERMO_PAUSE --> AC_CLIMATE_LADDER
+    TERMO_START_DAWN --> CHECK_CRATE
     SET_GRID_800 --> CHECK_CRATE
 
     AC_CLIMATE_LADDER --> POST_TERMO_CHECK{"termo_heated_today = True?"}
@@ -199,15 +208,23 @@ flowchart TD
 
     POST_TERMO_CHECK -- "NO (Morning Pre-Termo)" --> AC_PRE_26["🏰 AC to 26.0ºC (Base Comfort Pre-Termo)"]
 
-    %% PROTECCIÓ C-RATE & GRID SETPOINT
+    %% PROTECCIÓ CASCADA C-RATE
     AC_22 --> CHECK_CRATE
     AC_24 --> CHECK_CRATE
     AC_26 --> CHECK_CRATE
     AC_PRE_26 --> CHECK_CRATE
 
-    CHECK_CRATE{"⚡ Battery C-Rate Protection"}
-    CHECK_CRATE -- "Discharge >= 70A (>15s)" --> CRATE_1C["🚨 1C Emergency Cut: AC and Termo OFF"]
-    CHECK_CRATE -- "Discharge >= 34A (>3 min)" --> CRATE_05C["⚠️ 0.5C Thermal Stress Cut: AC and Termo OFF"]
+    CHECK_CRATE{"⚡ Cascading Battery C-Rate Protection"}
+    CHECK_CRATE -- "Discharge >= 70A (1C)" --> CRATE_1C_PHASE{"1C Surge Phase"}
+    CRATE_1C_PHASE -- "At 5s" --> CUT_TERMO_5S["♨️ Cut ONLY Water Heater (-1280W) <br> (Coffee maker/Toaster finish!)"]
+    CRATE_1C_PHASE -- "At 15s (if persists)" --> CUT_AC_15S["❄️ Cut AC (-850W)"]
+    CRATE_1C_PHASE -- "At 30s (extreme)" --> CUT_CUINA_30S["🥐☕ Cut Kitchen (Last resort)"]
+
+    CHECK_CRATE -- "Discharge >= 34A (0.5C)" --> CRATE_05C_PHASE{"0.5C Sustained Phase"}
+    CRATE_05C_PHASE -- "At 30s" --> CUT_TERMO_30S["♨️ Cut Water Heater"]
+    CRATE_05C_PHASE -- "At 2 min" --> CUT_AC_120S["❄️ Cut AC"]
+    CRATE_05C_PHASE -- "At 3 min" --> CUT_CUINA_180S["🥐☕ Cut Kitchen"]
+
     CHECK_CRATE -- "Normal" --> DYN_GRID
 
     DYN_GRID{"🔌 Dynamic Grid Setpoint (Termo Idle)"}
@@ -216,8 +233,12 @@ flowchart TD
 
     GRID_50 --> MEMORY_SAVE
     GRID_150 --> MEMORY_SAVE
-    CRATE_1C --> MEMORY_SAVE
-    CRATE_05C --> MEMORY_SAVE
+    CUT_TERMO_5S --> MEMORY_SAVE
+    CUT_AC_15S --> MEMORY_SAVE
+    CUT_CUINA_30S --> MEMORY_SAVE
+    CUT_TERMO_30S --> MEMORY_SAVE
+    CUT_AC_120S --> MEMORY_SAVE
+    CUT_CUINA_180S --> MEMORY_SAVE
 
     MEMORY_SAVE{"💾 eMMC Data Checkpoint"}
     MEMORY_SAVE -- "Every 30 minutes or at midnight" --> WRITE_FLASH["💾 Write caseta_daily_stats.json (300 bytes)"]
@@ -236,20 +257,26 @@ flowchart TD
   │      -> Turn AC OFF silently with zero push notifications.             │
   │    • Re-arm if Tint >= 28.8 ºC (regardless of outdoor) or Text >= 27 ºC│
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 1. 🛡️ BATTERY HEALTH & TWO-TIER DEFENSIVE SHIELD (Priority 1)          │
-  │    • Overnight 100% Top-Balancing using off-peak electricity rates.    │
-  │    • ⚡ 1C Protection (>=70A / ~3.5 kW for >15s): Emergency AC+Termo cut.│
-  │    • ⚡ 0.5C Protection (>=34A / ~1.7 kW for >3 min): Thermal stress cut. │
-  │    • ❄️ TIER 1 (SoC < 50%): Preventative AC shutdown via Tuya IR.      │
-  │    • 🚨 TIER 2 (SoC < 35%): Unconditional Termo disconnect in <20 ms   │
-  │      via LocalTuya LAN socket. Shields >10h of night UPS capacity.     │
+  │ 1. 🛡️ BATTERY HEALTH & 3-TIER DEFENSIVE SHIELD (Priority 1)            │
+  │    • Overnight 100% Top-Balancing (00:00 - 08:00h) during cheap P3.    │
+  │    • ♨️ TIER 1 (SoC < 65.0%): Unconditional Water Heater cutoff (1.28kW)│
+  │    • ❄️ TIER 2 (SoC < 60.0%): Preventative AC cutoff (rearm at >=65%). │
+  │    • 🥐☕ TIER 3 (SoC < 50.0%): Emergency Kitchen cutoff (Hard UPS SAI) │
+  │    • ⚡ Cascading 1C Protection (>=70A / ~3.5 kW):                      │
+  │      - 5s: Cut ONLY Water Heater (-1.28kW, saves coffee/toast in 90%).  │
+  │      - 15s: Cut Air Conditioner (-850W).                               │
+  │      - 30s: Cut Kitchen dual plug (last resort).                       │
+  │    • ⚡ Cascading 0.5C Protection (>=34A / ~1.7 kW sustained):          │
+  │      - 30s: Cut Termo | 2 min: Cut AC | 3 min: Cut Kitchen.            │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 2. ♨️ SOLAR SURPLUS WATER HEATING & PEAK SHAVING (Priority 2)          │
+  │ 2. ♨️ SOLAR SURPLUS WATER HEATING & DAWN SUPPORT (Priority 2)          │
   │    • Auto-activation when SoC >= 83.0% and Huawei Solar >= 500 W.       │
+  │    • Dawn solar check at 05:00h: If forecast <3.5 kWh, turn on at      │
+  │      05:15h using cheap P3 grid energy while holding 100% Min SOC.     │
   │    • Modulate AC to 27.0 ºC (Peak Shaving), releasing 600W.            │
   │    • 🔌 Dynamic Grid Support to 800 W to shield battery from discharge.│
-  │    • Auto-cutoff at 60.0 ºC: Power <50W for 2 min -> Termo OFF for day.│
-  │    • Cloud safety pause if SoC dips below 65%.                         │
+  │    • Auto-cutoff at 60.0 ºC: Power <50W for 2 min -> Termo OFF for day │
+  │      (persists active schedule and total kWh consumed).                │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 3. ❄️ DAYTIME SOLAR CLIMATE LADDER (Priority 3)                        │
   │    • ☕ Morning Pre-Termo: AC at gentle 26.0 ºC (Auto Fan).            │
@@ -283,44 +310,49 @@ $ caseta
 
 ⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡
 Connectant a Cerbo GX (192.168.1.106)...
-🕒 Registre en directe: 26/08/2026 - 10:31:18
+🕒 Registre en directe: 27/08/2026 - 17:15:30
 
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
-│    • Estat de Càrrega (SoC):  78.0%  [Carregant]  (SoH BMS: 90%)             │
-│    • Energia Disponible:      2.49 kWh actuals | 2.17 kWh útils (tall 10%)   │
-│    • Marge fins a Escut SAI:  0.42 kWh lliures (abans del sòl del 65%)       │
-│    • Tensió i Corrent:        49.50 V  |  1.1 A (54 W)                       │
-│    • Cel·les (Min / Màx):     3.294 V / 3.309 V (ΔV = 15 mV)                 │
-│    • Temperatura BMS:         29.6 ºC                                        │
+│    • Estat de Càrrega (SoC):  82.0%  [Carregant]  (SoH BMS: 90%)             │
+│    • Energia Disponible:      2.62 kWh actuals | 2.30 kWh útils (tall 10%)   │
+│    • Marge fins a Escut SAI:  0.54 kWh lliures (abans del sòl del 65%)       │
+│    • Tensió i Corrent:        49.80 V  |  3.2 A (159 W)                      │
+│    • Cel·les (Min / Màx):     3.310 V / 3.324 V (ΔV = 14 mV)                 │
+│    • Temperatura BMS:         28.4 ºC                                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                       │
-│    • Producció Solar Huawei:   618.7 W                                       │
-│    • Consum Casa (AC Loads):   576.7 W                                       │
-│    • Freqüència de CA Caseta: 49.95 Hz                                       │
+│    • Producció Solar Huawei:   924.5 W                                       │
+│    • Consum Casa (AC Loads):   715.0 W                                       │
+│    • Freqüència de CA Caseta: 49.98 Hz                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                    │
 │    • Mode MultiPlus:          ON (Connectat a Xarxa)                         │
-│    • Tensió Xarxa L1:         223.2 V                                        │
-│    • Estat de la Xarxa:       Important de Xarxa (46 W)                      │
+│    • Tensió Xarxa L1:         226.4 V                                        │
+│    • Estat de la Xarxa:       Important de Xarxa (52 W)                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ♨️🥐 CONSUMS INTEL·LIGENTS TUYA LOCAL (<20ms)                                 │
+│    • Termo Elèctric:          ⚪ En Repòs (0 W) [Calfat 09:51h - 12:45h (112 min) | 2.84 kWh] │
+│    • Cuina (Microones/Torr.): [Encès] (4 W) | 0.03 kWh                       │
+│    • Cuina (Cafetera):        [Encès]                                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 📊 BALANÇ I ENERGIA D'AVUI (Acumulats)                                       │
-│    • Producció Solar Generada:  0.10 kWh (Pic màxim: 613 W)                  │
-│    • Consum Total de la Casa:   0.65 kWh (Cobertura Solar: 15.0%)            │
-│    • Importat de Xarxa:         0.44 kWh | Exportat: 0.00 kWh (Zero Regal)   │
-│    • Cost Total Facturat d'Hui:  0.23 € (Tarifa 2.0TD - Tot inclòs)          │
+│    • Producció Solar Generada:  5.84 kWh (Pic màxim: 1285 W)                 │
+│    • Consum Total de la Casa:   4.12 kWh (Cobertura Solar: 88.5%)            │
+│    • Importat de Xarxa:         0.85 kWh | Exportat: 0.00 kWh (Zero Regal)   │
+│    • Cost Total Facturat d'Hui:  0.38 € (Tarifa 2.0TD - Tot inclòs)          │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                            │
-│    • Sol Esperat (Hui / Demà): 5.6 kWh / 7.0 kWh                             │
-│    • Temp. Màx / Ocàs (21h):   31.7 ºC / 28.6 ºC                             │
-│    • Índex de Risc de Tall:    Risc Baix (Normal) (25%)                      │
+│    • Sol Esperat (Hui / Demà): 6.2 kWh / 6.8 kWh                             │
+│    • Temp. Màx / Ocàs (21h):   32.1 ºC / 28.2 ºC                             │
+│    • Índex de Risc de Tall:    Risc Baix (Normal) (20%)                      │
 │    • Objectiu Reserva Nocturna:  75.0% de Bateria SAI                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌡️ CLIMA & METEOROLOGIA (Zigbee en RAM + Inforatge Ador)                     │
-│    • Habitació xiquets:     28.80 ºC | 60.0 %  [🔋 Pila: 100%]               │
-│    • Saló (Multisensor):    28.20 ºC | 58.0 % | 552 Lux | 🚶 Presència  [🔋 20%] │
-│    • Climatització AC:      ❄️ Mode Fred a 26 ºC [Encès]                     │
-│    • Exterior Ador (Oficial): 25.2 ºC | 79 % | 2 km/h ESE | 1016 hPa         │
+│    • Habitació xiquets:     27.90 ºC | 58.0 %  [🔋 Pila: 100%]               │
+│    • Saló (Multisensor):    27.40 ºC | 56.0 % | 420 Lux | 🚶 Presència  [🔋 20%] │
+│    • Climatització AC:      ❄️ Mode Fred a 24 ºC [Encès]                     │
+│    • Exterior Ador (Oficial): 28.5 ºC | 65 % | 4 km/h SE | 1015 hPa          │
 └──────────────────────────────────────────────────────────────────────────────┘
   Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT A CERBO GX (Venus OS)
 ```

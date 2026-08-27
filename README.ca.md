@@ -91,20 +91,19 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
                    │  🛡️ ZONA INTOCABLE DE SAI D'EMERGÈNCIA (70% – 80%):
                    │     • Més de 2,2 a 2,5 kWh nets sempre guardats.
                    │     • SAI instantani (0 ms) per si cau la línia del carrer.
-                   │     • Zero cicles de descàrrega profunda (>20.000 cicles / >30 anys).
-    0% SoC  ───────┘
+  100% SoC  ───────┘
 ```
 
 ---
 
-## 🗺️ Esquema Integral d'Arquitectura i Topologia del Sistema
+### 🗺️ Esquema Integral d'Arquitectura i Topologia del Sistema
 
 ```mermaid
 graph TD
     subgraph EXTERIOR ["☀️ ENTORNS I XARXES EXTERIORS"]
         SUN["☀️ Sol d'Ador (Radiació Solar)"]
         GRID["🔌 Línia Elèctrica Rural (2.0TD Imagina Energía 1.15kW)"]
-        METEO["🌤️ APIs Externe: Open-Meteo & Inforatge Ador"]
+        METEO["🌤️ APIs Externes: Open-Meteo & Inforatge Ador"]
     end
 
     subgraph GENERACIO ["⚡ GENERACIÓ I BATERIA"]
@@ -123,7 +122,8 @@ graph TD
     subgraph DOMOTICA ["🏰 CLIMATITZACIÓ I CONSUMS DOMÒTICS"]
         ZIG_SENS["🌡️ Sensors Zigbee 3.0 (Saló + Xiquets)"]
         TUYA_IR["❄️ Emissor Tuya IR S06 -> Aire Condicionat"]
-        TERMO_PLUG["♨️ Endoll Intel·ligent LocalTuya -> Termo Ariston 100L (1.25kW)"]
+        TERMO_PLUG["♨️ Endoll Intel·ligent LocalTuya -> Termo Ariston 100L (1.28kW)"]
+        CUINA_PLUG["🥐☕ Endoll Doble LocalTuya -> Microones/Torradora (DPS1) + Cafetera (DPS2)"]
         HOUSE_LOADS["💡 Consums Basals Caseta (Nevera, Router, Il·luminació)"]
     end
 
@@ -144,6 +144,7 @@ graph TD
     ZIGBEE_DAEMON --> MQTT
     GUARDIAN --> TUYA_IR
     GUARDIAN <--> TERMO_PLUG
+    GUARDIAN <--> CUINA_PLUG
 ```
 
 ---
@@ -154,15 +155,19 @@ Aquest és l'esquema exacte de decisions que executa el Guardià cada segon:
 
 ```mermaid
 flowchart TD
-    START(["🚀 Inici de Cicle (Cada Segon)"]) --> LLEI_SAI{"🚨 Bateria SoC < 50%?"}
+    START(["🚀 Inici de Cicle (Cada Segon)"]) --> LLEI_SOC{"🛡️ Matriu de Blindatge per SoC"}
 
-    %% ESCUT SAI
-    LLEI_SAI -- "SÍ (SoC < 50%)" --> AC_OFF["❄️ Apagar AC Immediatament (Escut SAI)"]
-    AC_OFF --> TERMO_35{"🚨 SoC < 35%?"}
-    TERMO_35 -- "SÍ" --> TERMO_CUT["🚨 Tall Incondicional Termo en <20ms + Notificació Crítica"]
-    TERMO_35 -- "NO" --> CHECK_CRATE
+    %% MATRIU SOC
+    LLEI_SOC -- "SoC < 65.0%" --> TERMO_CUT["♨️ Apagar Termo Elèctric (Seguretat Bateria)"]
+    TERMO_CUT --> CHECK_AC_SOC{"SoC < 60.0%?"}
+    CHECK_AC_SOC -- "SÍ" --> AC_CUT["❄️ Apagar Aire Condicionat (Auto-represa només si SoC >= 65%)"]
+    CHECK_AC_SOC -- "NO" --> CHECK_CRATE
+    AC_CUT --> CHECK_CUINA_SOC{"SoC < 50.0%?"}
+    CHECK_CUINA_SOC -- "SÍ" --> CUINA_CUT["🥐☕ Tall d'Emergència Cuina (Blindatge SAI dur)"]
+    CHECK_CUINA_SOC -- "NO" --> CHECK_CRATE
+    CUINA_CUT --> CHECK_CRATE
 
-    LLEI_SAI -- "NO (SoC >= 50%)" --> FREE_COOLING{"🍃 T_ext < 25ºC (>20 min) & T_int < 28ºC?"}
+    LLEI_SOC -- "SoC >= 65.0%" --> FREE_COOLING{"🍃 T_ext < 25ºC (>20 min) & T_int < 28ºC?"}
 
     %% FREE-COOLING
     FREE_COOLING -- "SÍ" --> AC_FC_OFF["🍃 Apagar AC Silenciadament (Sense Notificació)"]
@@ -171,23 +176,26 @@ flowchart TD
     FC_REARM -- "SÍ" --> REARM_AC["Re-activar Climatització"] --> CHECK_TERMO
     FC_REARM -- "NO" --> CHECK_TERMO
 
-    %% TERMO SURPLUS
+    %% TERMO SURPLUS & MATINADA
     CHECK_TERMO{"♨️ Estat del Termo Elèctric"} --> TERMO_ON_CHECK{"Termo està Encès?"}
 
     TERMO_ON_CHECK -- "SÍ" --> TERMO_P_CHECK{"Potència < 50W per > 2 min?"}
     TERMO_P_CHECK -- "SÍ (60ºC Assolits)" --> TERMO_FINISH["✅ Termo OFF (Feina Feta) <br> termo_heated_today = True"]
     TERMO_P_CHECK -- "NO" --> TERMO_SOC_PAUSE{"SoC < 65%?"}
-    TERMO_SOC_PAUSE -- "SÍ" --> TERMO_PAUSE["⏸️ Pausa de Seguretat per Núvols (Termo OFF)"]
+    TERMO_SOC_PAUSE -- "SÍ" --> TERMO_PAUSE["⏸️ Pausa de Seguretat (Termo OFF)"]
     TERMO_SOC_PAUSE -- "NO" --> SET_GRID_800["🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
 
-    TERMO_ON_CHECK -- "NO" --> TERMO_START_CHECK{"termo_heated_today = False & <br> SoC >= 83% & Sol >= 500W?"}
-    TERMO_START_CHECK -- "SÍ" --> TERMO_START["♨️ Engegar Termo per LocalTuya <br> 🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
+    TERMO_ON_CHECK -- "NO" --> TERMO_DAWN{"Matinada (05:15h) & Previsió < 3.5 kWh?"}
+    TERMO_DAWN -- "SÍ" --> TERMO_START_DAWN["♨️ Engegar Termo en P3 barat de xarxa (Min SoC 100%)"]
+    TERMO_DAWN -- "NO" --> TERMO_START_CHECK{"termo_heated_today = False & <br> SoC >= 83% & Sol >= 500W?"}
+    TERMO_START_CHECK -- "SÍ" --> TERMO_START["♨️ Engegar Termo per Excedents Solars <br> 🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
     TERMO_START_CHECK -- "NO" --> AC_CLIMATE_LADDER
 
     %% ESCALA CLIMA AC
     AC_CLIMATE_LADDER{"❄️ Escala de Climatització Diürna"}
     TERMO_FINISH --> AC_CLIMATE_LADDER
     TERMO_PAUSE --> AC_CLIMATE_LADDER
+    TERMO_START_DAWN --> CHECK_CRATE
     SET_GRID_800 --> CHECK_CRATE
 
     AC_CLIMATE_LADDER --> POST_TERMO_CHECK{"termo_heated_today = True?"}
@@ -199,15 +207,23 @@ flowchart TD
 
     POST_TERMO_CHECK -- "NO (Matí Pre-Termo)" --> AC_PRE_26["🏰 AC a 26.0ºC (Confort Base Pre-Termo)"]
 
-    %% PROTECCIÓ C-RATE & GRID SETPOINT
+    %% PROTECCIÓ CASCADA C-RATE
     AC_22 --> CHECK_CRATE
     AC_24 --> CHECK_CRATE
     AC_26 --> CHECK_CRATE
     AC_PRE_26 --> CHECK_CRATE
 
-    CHECK_CRATE{"⚡ Protecció C-Rate Bateria"}
-    CHECK_CRATE -- "Descàrrega >= 70A (>15s)" --> CRATE_1C["🚨 Tall 1C d'Urgència: AC i Termo a OFF"]
-    CHECK_CRATE -- "Descàrrega >= 34A (>3 min)" --> CRATE_05C["⚠️ Tall 0.5C per Estrès Tèrmic: AC i Termo a OFF"]
+    CHECK_CRATE{"⚡ Protecció C-Rate en Cascada"}
+    CHECK_CRATE -- "Descàrrega >= 70A (1C)" --> CRATE_1C_PHASE{"Fase Sobrecàrrega 1C"}
+    CRATE_1C_PHASE -- "Als 5s" --> CUT_TERMO_5S["♨️ Apagar NOMÉS Termo (-1280W) <br> (Cafetera/Torrada continuen!)"]
+    CRATE_1C_PHASE -- "Als 15s (si persisteix)" --> CUT_AC_15S["❄️ Apagar AC (-850W)"]
+    CRATE_1C_PHASE -- "Als 30s (extrem)" --> CUT_CUINA_30S["🥐☕ Apagar Cuina (Últim recurs)"]
+
+    CHECK_CRATE -- "Descàrrega >= 34A (0.5C)" --> CRATE_05C_PHASE{"Fase Sostinguda 0.5C"}
+    CRATE_05C_PHASE -- "Als 30s" --> CUT_TERMO_30S["♨️ Apagar Termo"]
+    CRATE_05C_PHASE -- "Als 2 min" --> CUT_AC_120S["❄️ Apagar AC"]
+    CRATE_05C_PHASE -- "Als 3 min" --> CUT_CUINA_180S["🥐☕ Apagar Cuina"]
+
     CHECK_CRATE -- "Normal" --> DYN_GRID
 
     DYN_GRID{"🔌 Grid Setpoint Dinàmic (Termo en Repòs)"}
@@ -216,8 +232,12 @@ flowchart TD
 
     GRID_50 --> MEMORY_SAVE
     GRID_150 --> MEMORY_SAVE
-    CRATE_1C --> MEMORY_SAVE
-    CRATE_05C --> MEMORY_SAVE
+    CUT_TERMO_5S --> MEMORY_SAVE
+    CUT_AC_15S --> MEMORY_SAVE
+    CUT_CUINA_30S --> MEMORY_SAVE
+    CUT_TERMO_30S --> MEMORY_SAVE
+    CUT_AC_120S --> MEMORY_SAVE
+    CUT_CUINA_180S --> MEMORY_SAVE
 
     MEMORY_SAVE{"💾 Checkpoint de Dades a eMMC"}
     MEMORY_SAVE -- "Cada 30 minuts o a mitjanit" --> WRITE_FLASH["💾 Guardar caseta_daily_stats.json (300 bytes)"]
@@ -237,21 +257,26 @@ flowchart TD
   │    • Re-activa si Tint >= 28.8 ºC (faça la calor que faça a fora) o si │
   │      Text >= 27.0 ºC amb el sol del matí.                              │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 1. 🛡️ SALUT DE LA BATERIA & ESCUT DEFENSIU DE 2 NIVELLS (Prioritat 1)  │
-  │    • Top-Balancing nocturn al 100% aprofitant tarifa supervall.        │
-  │    • ⚡ Protecció 1C (>=70A / ~3.5 kW per >15s): Tall d'urgència AC+Termo.│
-  │    • ⚡ Protecció 0.5C (>=34A / ~1.7 kW per >3 min): Tall estrès tèrmic.│
-  │    • ❄️ ESGGLO 1 (SoC < 50%): Apagada preventiva de l'AC per Tuya IR. │
-  │    • 🚨 ESGGLO 2 (SoC < 35%): Desconnexió incondicional del Termo en   │
-  │      <20 ms per socket LocalTuya LAN. Blinda >10h de SAI per a la nit. │
+  │ 1. 🛡️ SALUT DE LA BATERIA & BLINDATGE DE 3 NIVELLS (Prioritat 1)       │
+  │    • Top-Balancing nocturn al 100% (00:00 - 08:00h) en tarifa P3.      │
+  │    • ♨️ NIVELL 1 (SoC < 65.0%): Apagada incondicional del Termo (1.28kW)│
+  │    • ❄️ NIVELL 2 (SoC < 60.0%): Apagada preventiva AC (represa ≥65%). │
+  │    • 🥐☕ NIVELL 3 (SoC < 50.0%): Tall emergència Cuina (Sòl dur SAI). │
+  │    • ⚡ Desconnexió en Cascada 1C (>=70A / ~3.5 kW):                    │
+  │      - 5s: Apaga NOMÉS Termo (-1.28kW, salva el café/torrada en el 90%).│
+  │      - 15s: Apaga Aire Condicionat (-850W).                            │
+  │      - 30s: Tall d'emergència Cuina (últim recurs).                    │
+  │    • ⚡ Desconnexió en Cascada 0.5C (>=34A / ~1.7 kW sostinguts):       │
+  │      - 30s: Apaga Termo | 2 min: Apaga AC | 3 min: Apaga Cuina.        │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 2. ♨️ EXCEDENTS SOLARS PER AL TERMO & PEAK SHAVING (Prioritat 2)       │
+  │ 2. ♨️ EXCEDENTS SOLARS PER AL TERMO & SUPORT DE MATINADA (Prioritat 2) │
   │    • Encesa automàtica quan SoC >= 83.0% i Sol Huawei >= 500 W.         │
+  │    • Càlcul solar a les 05:00h: Si previssió < 3.5 kWh, engega a les    │
+  │      05:15h en P3 de xarxa mantenint SoC al 100% fins a les 08:00h.    │
   │    • Modulació de l'AC a 27.0 ºC (Peak Shaving) per alliberar 600W.    │
   │    • 🔌 Suport Dinàmic de Xarxa a 800 W per evitar descàrrega de bater.│
   │    • Apagat per feina feta (60.0 ºC): Consum <50W durant 2 minuts ->   │
-  │      Termo OFF per a tot el dia (termo_heated_today = True).           │
-  │    • Pausa de seguretat si entren núvols i SoC < 65%.                  │
+  │      Termo OFF per a tot el dia (registre horari i kWh consumits).     │
   ├────────────────────────────────────────────────────────────────────────┤
   │ 3. ❄️ ESCALA SOLAR DIÜRNA DE CLIMATITZACIÓ (Prioritat 3)               │
   │    • ☕ Matí Pre-Termo (Fins a acabar l'aigua): AC a 26.0 ºC (Auto).    │
@@ -269,60 +294,65 @@ flowchart TD
 
 ---
 
-## ⚡ Protecció Mecànica del Relé i Física del Corrent
+## ⚡ Protecció de Relés Mecànics & Física del Corrent
 
-- **Relé Sobredimensionat:** El relé intern del MultiPlus-II és de **`32 A` (7.3 kW)**. Com que la línia només demana **`5 A` (1.15 kW)**, treballa al **`15%` de càrrega**.
-- **Física d'Arc ($I^2$):** $(5/32)^2 = 0.024 \implies \mathbf{40\text{ vegades menys estrès d'arc}}$ als contactes de plata.
-- **Commutació per Pas per Zero (*Zero-Cross*):** El xip de Victron sincronitza l'obertura i tancament quan la tensió creua els $0\text{ V}$.
-- **Histèresi Obligatòria:** Mínim **`5 minuts (300 s)`** entre canvis d'estat de relé.
+- **Relé Industrial Sobredimensionat:** El MultiPlus-II incorpora un relé de transferència intern de **`32 A` (7.3 kW)**. Amb el límit de xarxa a **`5 A` (1.15 kW)**, els contactes treballen a només el **`15%` de la seua capacitat nominal**.
+- **Física d'Erosió per Arc ($I^2$):** $(5/32)^2 = 0.024 \implies \mathbf{40\times\text{ menys desgast per arc elèctric}}$ als contactes de plata.
+- **Commutació Zero-Cross:** El processador digital de senyal (DSP) de Victron commuta exactament en el pas per $0\text{ V}$ de l'ona sinusoidal de CA.
+- **Histèresi Obligatòria:** Bloqueig mínim de **`5 minuts (300 s)`** entre canvis d'estat del relé per evitar vibracions o oscil·lacions ràpides.
 
 ---
 
-## 💻 Tauler de Control Ràpid en Terminal (`caseta`)
+## 💻 Tauler de Telemetria en Directe (`caseta`)
 
 ```bash
 $ caseta
 
 ⚡ TAULER DE TELEMETRIA EN DIRECTE - CASETA D'ADOR ⚡
 Connectant a Cerbo GX (192.168.1.106)...
-🕒 Registre en directe: 26/08/2026 - 10:31:18
+🕒 Registre en directe: 27/08/2026 - 17:15:30
 
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
-│    • Estat de Càrrega (SoC):  78.0%  [Carregant]  (SoH BMS: 90%)             │
-│    • Energia Disponible:      2.49 kWh actuals | 2.17 kWh útils (tall 10%)   │
-│    • Marge fins a Escut SAI:  0.42 kWh lliures (abans del sòl del 65%)       │
-│    • Tensió i Corrent:        49.50 V  |  1.1 A (54 W)                       │
-│    • Cel·les (Min / Màx):     3.294 V / 3.309 V (ΔV = 15 mV)                 │
-│    • Temperatura BMS:         29.6 ºC                                        │
+│    • Estat de Càrrega (SoC):  82.0%  [Carregant]  (SoH BMS: 90%)             │
+│    • Energia Disponible:      2.62 kWh actuals | 2.30 kWh útils (tall 10%)   │
+│    • Marge fins a Escut SAI:  0.54 kWh lliures (abans del sòl del 65%)       │
+│    • Tensió i Corrent:        49.80 V  |  3.2 A (159 W)                      │
+│    • Cel·les (Min / Màx):     3.310 V / 3.324 V (ΔV = 14 mV)                 │
+│    • Temperatura BMS:         28.4 ºC                                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                       │
-│    • Producció Solar Huawei:   618.7 W                                       │
-│    • Consum Casa (AC Loads):   576.7 W                                       │
-│    • Freqüència de CA Caseta: 49.95 Hz                                       │
+│    • Producció Solar Huawei:   924.5 W                                       │
+│    • Consum Casa (AC Loads):   715.0 W                                       │
+│    • Freqüència de CA Caseta: 49.98 Hz                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                    │
 │    • Mode MultiPlus:          ON (Connectat a Xarxa)                         │
-│    • Tensió Xarxa L1:         223.2 V                                        │
-│    • Estat de la Xarxa:       Important de Xarxa (46 W)                      │
+│    • Tensió Xarxa L1:         226.4 V                                        │
+│    • Estat de la Xarxa:       Important de Xarxa (52 W)                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ♨️🥐 CONSUMS INTEL·LIGENTS TUYA LOCAL (<20ms)                                 │
+│    • Termo Elèctric:          ⚪ En Repòs (0 W) [Calfat 09:51h - 12:45h (112 min) | 2.84 kWh] │
+│    • Cuina (Microones/Torr.): [Encès] (4 W) | 0.03 kWh                       │
+│    • Cuina (Cafetera):        [Encès]                                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 📊 BALANÇ I ENERGIA D'AVUI (Acumulats)                                       │
-│    • Producció Solar Generada:  0.10 kWh (Pic màxim: 613 W)                  │
-│    • Consum Total de la Casa:   0.65 kWh (Cobertura Solar: 15.0%)            │
-│    • Importat de Xarxa:         0.44 kWh | Exportat: 0.00 kWh (Zero Regal)   │
-│    • Cost Total Facturat d'Hui:  0.23 € (Tarifa 2.0TD - Tot inclòs)          │
+│    • Producció Solar Generada:  5.84 kWh (Pic màxim: 1285 W)                 │
+│    • Consum Total de la Casa:   4.12 kWh (Cobertura Solar: 88.5%)            │
+│    • Importat de Xarxa:         0.85 kWh | Exportat: 0.00 kWh (Zero Regal)   │
+│    • Cost Total Facturat d'Hui:  0.38 € (Tarifa 2.0TD - Tot inclòs)          │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                            │
-│    • Sol Esperat (Hui / Demà): 5.6 kWh / 7.0 kWh                             │
-│    • Temp. Màx / Ocàs (21h):   31.7 ºC / 28.6 ºC                             │
-│    • Índex de Risc de Tall:    Risc Baix (Normal) (25%)                      │
+│    • Sol Esperat (Hui / Demà): 6.2 kWh / 6.8 kWh                             │
+│    • Temp. Màx / Ocàs (21h):   32.1 ºC / 28.2 ºC                             │
+│    • Índex de Risc de Tall:    Risc Baix (Normal) (20%)                      │
 │    • Objectiu Reserva Nocturna:  75.0% de Bateria SAI                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌡️ CLIMA & METEOROLOGIA (Zigbee en RAM + Inforatge Ador)                     │
-│    • Habitació xiquets:     28.80 ºC | 60.0 %  [🔋 Pila: 100%]               │
-│    • Saló (Multisensor):    28.20 ºC | 58.0 % | 552 Lux | 🚶 Presència  [🔋 20%] │
-│    • Climatització AC:      ❄️ Mode Fred a 26 ºC [Encès]                     │
-│    • Exterior Ador (Oficial): 25.2 ºC | 79 % | 2 km/h ESE | 1016 hPa         │
+│    • Habitació xiquets:     27.90 ºC | 58.0 %  [🔋 Pila: 100%]               │
+│    • Saló (Multisensor):    27.40 ºC | 56.0 % | 420 Lux | 🚶 Presència  [🔋 20%] │
+│    • Climatització AC:      ❄️ Mode Fred a 24 ºC [Encès]                     │
+│    • Exterior Ador (Oficial): 28.5 ºC | 65 % | 4 km/h SE | 1015 hPa          │
 └──────────────────────────────────────────────────────────────────────────────┘
   Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT A CERBO GX (Venus OS)
 ```
