@@ -1087,6 +1087,18 @@ class CasetaGuardian:
         elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
             # Condició d'Excedent: SoC >= 83.0% i Sol Huawei >= 500W (abans de pujar de 85% per donar prioritat a l'aigua)
             if self.soc >= 83.0 and self.pv_p >= 500.0:
+                # 🔌 1. Pre-rampa de xarxa: Pujar Grid Setpoint a 800W 5 segons ABANS per preparar el pont i evitar cap sag a la bateria
+                try:
+                    import dbus
+                    bus = dbus.SystemBus()
+                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
+                    obj.SetValue(dbus.Double(800.0), dbus_interface="com.victronenergy.BusItem")
+                    self.last_grid_setpoint = 800.0
+                    log.info("🔌 [PRE-RAMPA] Grid Setpoint establert a 800W. Esperant 5s d'amortidor previ a l'encesa del Termo...")
+                    time.sleep(5.0)
+                except Exception as e:
+                    log.warning(f"Error establint pre-rampa de 800W a D-Bus: {e}")
+
                 self.send_termo_tuya_command(
                     power=True,
                     reason=f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 83% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo"
