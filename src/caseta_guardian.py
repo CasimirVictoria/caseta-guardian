@@ -817,15 +817,15 @@ class CasetaGuardian:
         """Avalua les Lleis de Climatització Intel·ligent de la Caseta."""
         now = time.time()
         
-        # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Esglaó 1: Bateria <50%)
-        if 0 < self.soc < 50.0:
+        # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Bateria <60%)
+        if 0 < self.soc < 60.0:
             if self.ac_current_power != 0:
-                self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI Esglaó 1: Bateria <50% -> Apagat de l'AC")
-                self.send_notification("❄️ Escut SAI Esglaó 1", "Bateria <50%! S'ha apagat l'AC automàticament per protegir la reserva nocturna!", "default", "snowflake")
+                self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI: Bateria <60% -> Apagat de l'AC")
+                self.send_notification("❄️ Escut SAI Clima", "Bateria <60%! S'ha apagat l'AC automàticament per protegir la reserva de bateria!", "default", "snowflake")
                 self.ac_turned_off_by_guardian = True
             return
 
-        # 🛡️ Histèresi Anti-Cicle: Si l'AC està apagat, NOMÉS s'encén automàticament si SoC >= 65.0% (banda del 15%)
+        # 🛡️ Histèresi Anti-Cicle: Si l'AC està apagat, NOMÉS s'encén automàticament si SoC >= 65.0%
         if self.ac_current_power == 0 and self.soc < 65.0:
             return
 
@@ -1312,40 +1312,47 @@ class CasetaGuardian:
         # ☀️ Avaluació del Desviador d'Excedents Solar per al Termo
         self.evaluate_termo_surplus(now_madrid)
 
-        # 🚨 ESGGLO 1 (SoC < 50%): Apagat preventiu de l'Aire Condicionat
-        if 0 < self.soc < 50.0 and self.ac_current_power != 0:
-            self.send_ac_tuya_command(power=0, reason="❄️ Escut SAI Esglaó 1: Bateria <50% -> Apagat de l'AC")
+        # 🚨 ESGGLO 1 (SoC < 65%): Tall incondicional del Termo Elèctric per preservar càrrega
+        if 0 < self.soc < 65.0 and self.termo_status.get("is_on", False):
+            self.send_termo_tuya_command(power=False, reason="♨️ Escut SoC: Bateria <65% -> Apagat incondicional del Termo")
 
-        # 🚨 ESGGLO 2 (SoC < 45%): Tall Crític de Seguretat per blindar >12h de SAI
-        if 0 < self.soc < 45.0:
-            if self.ac_current_power != 0:
-                self.send_ac_tuya_command(power=0, reason="🚨 Blindatge Total: Bateria <45% -> AC forçat a OFF")
-            if not getattr(self, "termo_cut_off_today", False):
-                self.send_termo_tuya_command(power=False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Termo Incondicional")
-                self.send_notification("🚨 Blindatge Total SAI", "Bateria <45%! S'ha desconnectat incondicionalment el termo per blindar la reserva nocturna.", "high", "zap")
-                self.termo_cut_off_today = True
-            # Tall d'emergència a l'Endoll Doble Cuina (Microones/Torradora + Cafetera)
+        # 🚨 ESGGLO 2 (SoC < 60%): Apagat preventiu de l'Aire Condicionat
+        if 0 < self.soc < 60.0 and self.ac_current_power != 0:
+            self.send_ac_tuya_command(power=0, reason="❄️ Escut SoC: Bateria <60% -> Apagat de l'AC")
+
+        # 🚨 ESGGLO 3 (SoC < 50%): Tall Crític de Cuina per blindar >12h de reserva SAI
+        if 0 < self.soc < 50.0:
             if self.doble_status.get("ch1_on", False):
-                self.send_doble_tuya_command(1, False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Microones/Torradora")
+                self.send_doble_tuya_command(1, False, reason="🚨 Blindatge SAI: Bateria <50% -> Desconnexió Microones/Torradora")
             if self.doble_status.get("ch2_on", False):
-                self.send_doble_tuya_command(2, False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Cafetera")
-        elif self.soc >= 60.0:
+                self.send_doble_tuya_command(2, False, reason="🚨 Blindatge SAI: Bateria <50% -> Desconnexió Cafetera")
+        elif self.soc >= 65.0:
             self.termo_cut_off_today = False
 
-        # ⚡ PROTECCIÓ C-RATE A: Pic de Sobrecàrrega 1C (>=70A / ~3.5kW durant >15 segons)
+        # ⚡ PROTECCIÓ C-RATE A: Pic de Sobrecàrrega 1C (>=70A / ~3.5kW) en Cascada
         if self.bat_i <= -70.0:
             if self.c1_discharge_start_time is None:
                 self.c1_discharge_start_time = now
-            elif now - self.c1_discharge_start_time >= 15.0:
-                self.send_ac_tuya_command(power=0, reason="🚨 Tall 1C: Descàrrega >70A (>15s)")
-                self.send_termo_tuya_command(power=False, reason="🚨 Tall 1C: Descàrrega >70A (>15s)")
+            dt_c1 = now - self.c1_discharge_start_time
+
+            # Fase 1 (als 5s): Apaguem NOMÉS el Termo primer (-1.280W) per salvar el café/AC
+            if dt_c1 >= 5.0 and self.termo_status.get("is_on", False):
+                self.send_termo_tuya_command(power=False, reason="⚡ Tall 1C Cascada (Fase 1 - 5s): Desconnexió Termo (-1.280W)")
+                log.info("⚡ [CASCADA 1C] Termo apagat per alleujar sobrecàrrega i salvar el café/AC.")
+
+            # Fase 2 (als 15s): Si encara continua >70A, apaguem l'AC (-850W)
+            if dt_c1 >= 15.0 and self.ac_current_power != 0:
+                self.send_ac_tuya_command(power=0, reason="⚡ Tall 1C Cascada (Fase 2 - 15s): Desconnexió AC (-850W)")
+
+            # Fase 3 (als 30s): Últim recurs si continua la sobrecàrrega extrema
+            if dt_c1 >= 30.0:
                 if self.doble_status.get("ch1_on", False):
-                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 1C: Desconnexió Microones/Torradora")
+                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 1C Cascada (Fase 3 - 30s): Desconnexió Microones/Torradora")
                 if self.doble_status.get("ch2_on", False):
-                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 1C: Desconnexió Cafetera")
+                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 1C Cascada (Fase 3 - 30s): Desconnexió Cafetera")
                 self.send_notification(
-                    "🚨 Sobrecorrent Crític Bateria",
-                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=1C / ~3.5kW) durant >15s! S'han desconnectat l'AC, Termo i Cuina per protegir les cel·les LiFePO4.",
+                    "🚨 Sobrecorrent Crític Bateria 1C",
+                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=70A) durant >30s! S'ha completat la cascada de desconnexió per protegir les cel·les LiFePO4.",
                     "high",
                     "warning"
                 )
@@ -1353,20 +1360,29 @@ class CasetaGuardian:
         else:
             self.c1_discharge_start_time = None
 
-        # ⚡ PROTECCIÓ C-RATE B: Sobrecàrrega Sostinguda 0.5C (>=34A / ~1.7kW durant >3 minuts)
+        # ⚡ PROTECCIÓ C-RATE B: Sobrecàrrega Sostinguda 0.5C (>=34A / ~1.7kW) en Cascada
         if self.bat_i <= -34.0:
             if self.c05_discharge_start_time is None:
                 self.c05_discharge_start_time = now
-            elif now - self.c05_discharge_start_time >= 180.0:
-                self.send_ac_tuya_command(power=0, reason="🚨 Tall 0.5C: Descàrrega sostinguda >34A (>3 min)")
-                self.send_termo_tuya_command(power=False, reason="🚨 Tall 0.5C: Descàrrega sostinguda >34A (>3 min)")
+            dt_c05 = now - self.c05_discharge_start_time
+
+            # Fase 1 (als 30s): Apaguem Termo
+            if dt_c05 >= 30.0 and self.termo_status.get("is_on", False):
+                self.send_termo_tuya_command(power=False, reason="⚡ Tall 0.5C Cascada (30s): Desconnexió Termo")
+
+            # Fase 2 (als 120s / 2 min): Apaguem AC
+            if dt_c05 >= 120.0 and self.ac_current_power != 0:
+                self.send_ac_tuya_command(power=0, reason="⚡ Tall 0.5C Cascada (2 min): Desconnexió AC")
+
+            # Fase 3 (als 180s / 3 min): Apaguem Cuina si la descàrrega persisteix
+            if dt_c05 >= 180.0:
                 if self.doble_status.get("ch1_on", False):
-                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 0.5C: Desconnexió Microones/Torradora")
+                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 0.5C Cascada (3 min): Desconnexió Microones/Torradora")
                 if self.doble_status.get("ch2_on", False):
-                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 0.5C: Desconnexió Cafetera")
+                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 0.5C Cascada (3 min): Desconnexió Cafetera")
                 self.send_notification(
-                    "🚨 Sobrecàrrega Sostinguda Bateria",
-                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=34A / ~1.7kW) durant >3 minuts! S'han apagat l'AC, Termo i Cuina per evitar estrès tèrmic.",
+                    "🚨 Sobrecàrrega Sostinguda Bateria 0.5C",
+                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=34A) durant >3 minuts! Protecció tèrmica aplicada.",
                     "high",
                     "warning"
                 )
