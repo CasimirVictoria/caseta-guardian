@@ -735,23 +735,27 @@ class CasetaGuardian:
                 self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🌙 Horari Nocturn: Descans a 26.5ºC (Ventilador Auto)")
             return
 
-        # ☀️ LLEI 3: Escala Solar Dinàmica Diürna
-        # Graó 1: Super-Excedent Solar (Sol >= 600W & SoC >= 85% & Termo en repòs) -> 22ºC + Ventilador Alt (3)
-        if self.pv_p >= 600.0 and self.soc >= 85.0 and (not termo_on or termo_p < 500.0):
-            if self.ac_current_power != 1 or self.ac_current_temp != 22:
-                self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Graó 1: Super-Excedent Solar ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 22ºC (Ventilador Alt)")
-            return
+        # ☀️ LLEI 3: Escala Solar Dinàmica Diürna (Només s'activa el Supercooling si el Termo ja ha escalfat l'aigua a 60ºC)
+        termo_fet = getattr(self, "termo_heated_today", False)
 
-        # Graó 2: Transició Tarda / Excedent Moderat (Sol >= 250W & SoC >= 79%) -> 24ºC + Ventilador Auto (0)
-        if self.pv_p >= 250.0 and self.soc >= 79.0:
-            if self.ac_current_power != 1 or self.ac_current_temp != 24:
-                self.send_ac_tuya_command(power=1, temp=24, mode=0, fan=0, reason=f"🌤️ Graó 2: Excedent Moderat ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 24ºC (Ventilador Auto)")
-            return
+        if termo_fet:
+            # Graó 1: Super-Excedent Solar Post-Termo (Sol >= 600W & SoC >= 85%) -> 22ºC + Ventilador Alt (3)
+            if self.pv_p >= 600.0 and self.soc >= 85.0:
+                if self.ac_current_power != 1 or self.ac_current_temp != 22:
+                    self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Graó 1: Supercooling Post-Termo ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 22ºC (Ventilador Alt)")
+                return
 
-        # Graó 3: Confort Base Permanent Diürn (SoC >= 69% o caiguda de bateria <79%) -> 26ºC + Ventilador Auto (0)
+            # Graó 2: Transició Tarda / Excedent Moderat Post-Termo (Sol >= 250W & SoC >= 79%) -> 24ºC + Ventilador Auto (0)
+            if self.pv_p >= 250.0 and self.soc >= 79.0:
+                if self.ac_current_power != 1 or self.ac_current_temp != 24:
+                    self.send_ac_tuya_command(power=1, temp=24, mode=0, fan=0, reason=f"🌤️ Graó 2: Excedent Moderat Post-Termo ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 24ºC (Ventilador Auto)")
+                return
+
+        # Graó 3: Confort Base Permanent Diürn (26ºC abans que el termo acabe o amb bateria normal)
         if self.soc >= 69.0:
             if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason=f"🏰 Graó 3: Confort Base Estable a 26ºC (SoC {self.soc:.1f}%)")
+                motiu = "🏰 Matí Pre-Termo: Confort Base Estable a 26ºC" if not termo_fet else f"🏰 Confort Base Estable a 26ºC (SoC {self.soc:.1f}%)"
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason=motiu)
         else:
             # Bateria Baixa (<69%) I repòs >30 min -> Mode Eco 28ºC per protegir el coixí
             time_since_presence = now - self.last_presence_seen_time
