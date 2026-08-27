@@ -170,9 +170,16 @@ class CasetaGuardian:
         self.ac_current_power = 1
         self.ac_current_temp = 26
         self.ac_turned_off_by_guardian = False
-        # Termo Elèctric (Tuya Plug)
+        self.ac_turned_off_by_free_cooling = False
+        self.free_cooling_start_time = None
+        self.ext_temp = None
+        self.clima_sensors = {}
+        
+        # Termo Elèctric (Tuya Plug / LocalTuya)
         self.last_termo_update_time = 0.0
         self.termo_status = {}
+        self.termo_heated_today = False
+        self.termo_low_power_start_time = None
         
         # Protecció de Corrent i C-rate de Bateria
         self.c1_discharge_start_time = None
@@ -391,6 +398,7 @@ class CasetaGuardian:
             tmin_m = re.search(r'class="boxpetitkTM negreT"><span class="varmobil">m&iacute;n</span>(\d+),(\d+)', html)
             tmin = float(f"{tmin_m.group(1)}.{tmin_m.group(2)}") if tmin_m else None
 
+            self.ext_temp = temp
             inforatge_data = {
                 "temperatura": temp,
                 "humitat": hum,
@@ -647,7 +655,7 @@ class CasetaGuardian:
             return False
 
     def evaluate_climate_control(self, now_madrid):
-        """Avalua les 4 Lleis de Climatització Intel·ligent de la Caseta."""
+        """Avalua les Lleis de Climatització Intel·ligent de la Caseta."""
         now = time.time()
         
         # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Esglaó 1: Bateria <50%)
@@ -663,6 +671,42 @@ class CasetaGuardian:
             log.info(f"🔄 Bateria recuperada ({self.soc:.1f}% >= 50%). Restablint AC automàticament...")
             self.send_notification("❄️ Restabliment Climatització", f"Bateria recuperada ({self.soc:.1f}% >= 50%)! S'ha reprès l'AC automàticament.", "default", "snowflake")
             self.ac_turned_off_by_guardian = False
+
+        # Lectures de temperatura interior (Zigbee) i exterior (Inforatge)
+        s1 = self.clima_sensors.get("sensor_1", {}) if self.clima_sensors else {}
+        s2 = self.clima_sensors.get("sensor_2", {}) if self.clima_sensors else {}
+        t1 = s1.get("temperatura")
+        t2 = s2.get("temperatura")
+        t_int = t2 if t2 is not None else (t1 if t1 is not None else 26.5)
+        t_ext = self.ext_temp
+
+        # 🍃 LLEI 0: Free-Cooling Bioclimàtic (Apagat d'AC si a fora fa fresca)
+        # Si T_ext < 25.0ºC durant >20 minuts (1200s) I T_int < 28.0ºC -> Apaga AC (sense notificació)
+        if t_ext is not None and t_ext < 25.0 and t_int < 28.0:
+            if self.free_cooling_start_time is None:
+                self.free_cooling_start_time = now
+                log.info(f"🍃 Iniciant compte enrere de 20 minuts de Free-Cooling (T_ext: {t_ext:.1f}ºC < 25ºC | T_int: {t_int:.1f}ºC < 28ºC)...")
+            elif now - self.free_cooling_start_time >= 1200:
+                if self.ac_current_power != 0:
+                    self.send_ac_tuya_command(
+                        power=0,
+                        reason=f"🍃 Free-Cooling: T_ext ({t_ext:.1f}ºC < 25ºC) >20 min i T_int ({t_int:.1f}ºC < 28ºC) -> AC Apagat (Sense Notificació)"
+                    )
+                    self.ac_turned_off_by_free_cooling = True
+                    log.info(f"🍃 Free-Cooling aplicat: AC apagat silenciadament per exterior fresc ({t_ext:.1f}ºC).")
+                return
+        else:
+            self.free_cooling_start_time = None
+
+        # Si l'AC s'havia apagat per Free-Cooling, comprova si cal re-encendre:
+        if self.ac_turned_off_by_free_cooling:
+            # Condicions de re-encesa: T_int >= 28.8ºC (estiga com estiga fora) O T_ext >= 27.0ºC
+            if t_int >= 28.8 or (t_ext is not None and t_ext >= 27.0):
+                log.info(f"🔥 Finalitzant Free-Cooling (T_int: {t_int:.1f}ºC >= 28.8ºC o T_ext: {t_ext}ºC >= 27ºC). Re-activant climatització...")
+                self.ac_turned_off_by_free_cooling = False
+            else:
+                # Mantindre l'AC apagat mentre dure el Free-Cooling
+                return
 
         # ⚙️ LLEI 4: Protecció del Compressor i Anti-Flapping (mínim 10 minuts)
         if now - self.last_ac_command_time < 600:
@@ -928,8 +972,86 @@ class CasetaGuardian:
             except Exception:
                 pass
 
-    def evaluate_state_machine(self):
+    def evaluate_termo_surplus(self, now_madrid):
+        """Avalua l'encesa autònoma del Termo Elèctric per excedents solars diürns (11:30h - 15:30h)."""
         now = time.time()
+        hour = now_madrid.hour
+        minute = now_madrid.minute
+        time_decimal = hour + (minute / 60.0)
+
+        # Reset diari a mitjanit
+        today_str = now_madrid.strftime("%Y-%m-%d")
+        if getattr(self, "termo_day_str", "") != today_str:
+            self.termo_day_str = today_str
+            self.termo_heated_today = False
+            self.termo_low_power_start_time = None
+
+        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
+        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
+
+        # Si el termo ja està encès:
+        if termo_on:
+            # 1. Comprovació d'Aigua Calenta a 60ºC (Termòstat Ariston talla -> Potència < 50W durant 2 min)
+            if termo_p < 50.0:
+                if self.termo_low_power_start_time is None:
+                    self.termo_low_power_start_time = now
+                elif now - self.termo_low_power_start_time >= 120.0:
+                    self.send_termo_tuya_command(
+                        power=False,
+                        reason="✅ Aigua calenta a 60ºC assolida (Consum <50W durant 2 min) -> Pasteurització Completada"
+                    )
+                    self.send_notification(
+                        "♨️ Aigua Calenta a 60ºC Assolida!",
+                        "El termo ha arribat a 60ºC i ha completat la pasteurització anti-legionel·la. Apagat per a la resta del dia!",
+                        "default",
+                        "check"
+                    )
+                    self.termo_heated_today = True
+                    self.termo_low_power_start_time = None
+                    return
+            else:
+                self.termo_low_power_start_time = None
+
+            # 2. Pausa per Núvol / Bateria Caiguda (<65% durant el dia)
+            if self.soc < 65.0:
+                self.send_termo_tuya_command(
+                    power=False,
+                    reason=f"⏸️ Pausa de Seguretat: Bateria ha baixat al {self.soc:.1f}% (<65%)"
+                )
+                return
+
+            # 3. Fi de la Finestra d'Excedents (passades les 16:00h)
+            if time_decimal >= 16.0:
+                self.send_termo_tuya_command(
+                    power=False,
+                    reason="🕒 Fi Finestra d'Excedents Solars (16:00h)"
+                )
+                return
+
+        # Si el termo està apagat i encara no ha completat la càrrega d'avui:
+        elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
+            # Finestra de màxim sol: 11:30h a 15:30h
+            if 11.5 <= time_decimal <= 15.5:
+                # Condició d'Excedent: SoC >= 85.0% i Sol Huawei >= 500W
+                if self.soc >= 85.0 and self.pv_p >= 500.0:
+                    self.send_termo_tuya_command(
+                        power=True,
+                        reason=f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 85% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo"
+                    )
+                    self.send_notification(
+                        "♨️ Termo Engegat per Excedents Solars",
+                        f"Bateria al {self.soc:.1f}% i Sol a {self.pv_p:.0f}W. Escalfant aigua de franc!",
+                        "default",
+                        "sun"
+                    )
+
+    def evaluate_state_machine(self, now_madrid=None):
+        now = time.time()
+        if now_madrid is None:
+            now_madrid = get_madrid_now()
+
+        # ☀️ Avaluació del Desviador d'Excedents Solar per al Termo
+        self.evaluate_termo_surplus(now_madrid)
 
         # 🚨 ESGGLO 1 (SoC < 50%): Apagat preventiu de l'Aire Condicionat
         if 0 < self.soc < 50.0 and self.ac_current_power != 0:
@@ -1117,7 +1239,7 @@ class CasetaGuardian:
                 self.update_inforatge()
                 self.update_termo_status()
                 self.update_energy_integrals(now_madrid)
-                self.evaluate_state_machine()
+                self.evaluate_state_machine(now_madrid)
                 self.evaluate_climate_control(now_madrid)
                 
                 time.sleep(1.0)
