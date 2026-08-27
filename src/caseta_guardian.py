@@ -240,7 +240,8 @@ class CasetaGuardian:
                     self.p1_kwh_today = float(data.get("p1_kwh_today", 0.0))
                     self.p2_kwh_today = float(data.get("p2_kwh_today", 0.0))
                     self.p3_kwh_today = float(data.get("p3_kwh_today", 0.0))
-                    log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum.")
+                    self.termo_heated_today = bool(data.get("termo_heated_today", False))
+                    log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum (Termo calfat: {self.termo_heated_today}).")
             except Exception as e:
                 log.warning(f"No s'han pogut carregar acumulats previs: {e}")
 
@@ -284,6 +285,22 @@ class CasetaGuardian:
             log.error(f"Error registrant històric permanent diari: {e}")
 
     def send_notification(self, title: str, message: str, priority: str = "default", tags: str = "zap"):
+        # 🔕 1. Silenci d'arrencada: Durant els primers 60 segons, silenciar notificacions rutinàries
+        now = time.time()
+        if hasattr(self, "daemon_start_time") and (now - self.daemon_start_time < 60):
+            if priority not in ("urgent", "high", "5", "4"):
+                log.info(f"🔕 [SILENCI D'ARRENCADA] Notificació rutinària silenciada: {title}")
+                return
+
+        # 🔕 2. Filtre anti-repetició (Deduplicació en menys de 10 minuts per a no-crítiques)
+        dedup_key = f"{title}_{message[:30]}"
+        if not hasattr(self, "_notif_history"):
+            self._notif_history = {}
+        last_sent = self._notif_history.get(dedup_key, 0.0)
+        if (now - last_sent < 600) and priority not in ("urgent", "high", "5", "4"):
+            return
+        self._notif_history[dedup_key] = now
+
         try:
             url = f"https://ntfy.sh/{NTFY_TOPIC}"
             data = message.encode("utf-8")
@@ -930,6 +947,7 @@ class CasetaGuardian:
             "relay_switch_count": self.relay_switch_count,
             "max_cell_delta_today": round(self.max_cell_delta_today, 1),
             "soh_bms": round(self.soh, 0),
+            "termo_heated_today": getattr(self, "termo_heated_today", False),
             "timestamp": time.time()
         }
         try:
