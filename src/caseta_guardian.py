@@ -819,26 +819,36 @@ class CasetaGuardian:
 
         # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W)
         if termo_on and termo_p >= 500.0:
-            sol_bonic = (getattr(self, "today_kwh_est", 0.0) >= 4.5) or (getattr(self, "remaining_kwh_today", 0.0) >= 3.0)
-            if sol_bonic:
-                # ☀️ Dia Clar / Assolellat: Deixar que la bateria ajude a 200W per crear el Vas Buit fins al 70%
-                if self.soc >= 72.0:
-                    target = 200.0
-                    reason = f"♨️ Termo ({termo_p:.0f}W) & Sol Previst {self.today_kwh_est:.1f}kWh (SoC {self.soc:.1f}% >= 72%) -> Setpoint 200W (Buidant Vas)"
-                elif self.soc >= 68.0:
-                    target = 500.0
-                    reason = f"♨️ Termo ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 72% -> Setpoint 500W (Frenant Descàrrega)"
-                else:
-                    target = 800.0
-                    reason = f"♨️ Termo ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 68% -> Setpoint 800W (Sòl Segur Bateria)"
+            now_madrid = get_madrid_now()
+            time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
+            
+            # 🌙 A. Franja Matinada Vall P3 (06:00h - 07:00h): Xarxa total per aprofitar tarifa barata (0.08 €/kWh)
+            if 6.0 <= time_decimal < 7.0:
+                target = 1300.0
+                reason = f"🌙 Arbitratge Vall P3 (06h-07h) -> Setpoint 1300W (Tot de Xarxa Barata a 0.08 €/kWh)"
             else:
-                # ☁️ Dia Ennuvolat (<4.5 kWh): Xarxa a 800W per no buidar la bateria sense sol
-                if self.soc >= 85.0:
-                    target = 400.0
-                    reason = f"☁️ Dia Ennuvolat & Termo ({termo_p:.0f}W) -> Setpoint 400W"
+                # ☀️ B. Franja Diürna amb Excedents Solars (09:30h - 16:00h)
+                today_est = getattr(self, "today_kwh_est", 5.0)
+                if today_est >= 5.0:
+                    # ☀️ Dia Clar / Assolellat (>=5.0 kWh): Buidar Vas Buit fins al 70%
+                    if self.soc >= 70.0:
+                        target = 200.0
+                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sol Previst {today_est:.1f}kWh (SoC {self.soc:.1f}% >= 70%) -> Setpoint 200W (Buidant Vas)"
+                    else:
+                        target = 800.0
+                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sòl Assolit (SoC {self.soc:.1f}% < 70%) -> Setpoint 800W (Congelant Bateria)"
+                elif today_est >= 3.5:
+                    # 🌤️ Dia Moderat (3.5 - 5.0 kWh): Buidar Vas Buit fins al 78%
+                    if self.soc >= 78.0:
+                        target = 400.0
+                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sol Previst {today_est:.1f}kWh (SoC {self.soc:.1f}% >= 78%) -> Setpoint 400W"
+                    else:
+                        target = 800.0
+                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sòl Assolit (SoC {self.soc:.1f}% < 78%) -> Setpoint 800W"
                 else:
+                    # ☁️ Dia Ennuvolat (<3.5 kWh): Xarxa a 800W per protegir la bateria sense sol
                     target = 800.0
-                    reason = f"☁️ Dia Ennuvolat & Termo ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 85% -> Setpoint 800W (Protecció Sense Sol)"
+                    reason = f"☁️ Dia Ennuvolat ({today_est:.1f}kWh) & Termo ({termo_p:.0f}W) -> Setpoint 800W (Protecció Sense Sol)"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS
         else:
@@ -1079,27 +1089,54 @@ class CasetaGuardian:
 
         # Si el termo està apagat i encara no ha completat la càrrega d'avui:
         elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
-            # Condició d'Excedent: SoC >= 83.0% i Sol Huawei >= 500W (abans de pujar de 85% per donar prioritat a l'aigua)
-            if self.soc >= 83.0 and self.pv_p >= 500.0:
-                # 🔌 1. Pre-rampa de xarxa dinàmica i ❄️ Pre-Peak Shaving AC (27ºC) 4s ABANS per blindar la bateria
-                sol_bonic = (getattr(self, "today_kwh_est", 0.0) >= 4.5) or (getattr(self, "remaining_kwh_today", 0.0) >= 3.0)
-                if sol_bonic:
-                    pre_target = 200.0 if self.soc >= 72.0 else (500.0 if self.soc >= 68.0 else 800.0)
+            today_est = getattr(self, "today_kwh_est", 5.0)
+
+            # 🌙 CAS A: Arbitratge Matinada Vall P3 (06:00h - 07:00h) si el dia serà fosc/plujós (<3.5 kWh)
+            if 6.0 <= time_decimal < 7.0 and today_est < 3.5:
+                try:
+                    import dbus
+                    bus = dbus.SystemBus()
+                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
+                    obj.SetValue(dbus.Double(1300.0), dbus_interface="com.victronenergy.BusItem")
+                    self.last_grid_setpoint = 1300.0
+                    log.info("🔌 [MATINADA P3] Grid Setpoint a 1300W abans d'engegar el Termo a preu Vall (0.08 €/kWh)...")
+                except Exception as e:
+                    log.warning(f"Error establint pre-rampa P3 a D-Bus: {e}")
+
+                self.send_termo_tuya_command(
+                    power=True,
+                    reason=f"🌙 Arbitratge Vall P3: Previsió solar fosca ({today_est:.1f} kWh < 3.5 kWh) -> Calfant aigua en horari super-econòmic (0.08 €/kWh)"
+                )
+                self.send_notification(
+                    "🌙 Termo Engegat en Franja Vall P3",
+                    f"Dia ennuvolat previst ({today_est:.1f} kWh). Calfant aigua a preu super-econòmic (0.08 €/kWh) abans de les 08:00h!",
+                    "default",
+                    "moon"
+                )
+                return
+
+            # ☀️ CAS B: Excedents Solars Diürns (09:30h - 16:00h): SoC >= 80.0% i Sol Huawei >= 500W
+            if 9.0 <= time_decimal < 16.0 and self.soc >= 80.0 and self.pv_p >= 500.0:
+                if today_est >= 5.0:
+                    pre_target = 200.0
+                elif today_est >= 3.5:
+                    pre_target = 400.0
                 else:
-                    pre_target = 400.0 if self.soc >= 85.0 else 800.0
+                    pre_target = 800.0
+
                 try:
                     import dbus
                     bus = dbus.SystemBus()
                     obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
                     obj.SetValue(dbus.Double(pre_target), dbus_interface="com.victronenergy.BusItem")
                     self.last_grid_setpoint = pre_target
-                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {pre_target:.0f}W abans d'engegar el Termo...")
+                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {pre_target:.0f}W abans d'engegar el Termo per excedents solars...")
                 except Exception as e:
                     log.warning(f"Error establint pre-rampa a D-Bus: {e}")
 
                 self.send_termo_tuya_command(
                     power=True,
-                    reason=f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 83% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo"
+                    reason=f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 80% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo"
                 )
                 self.send_notification(
                     "♨️ Termo Engegat per Excedents Solars",
