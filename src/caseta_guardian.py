@@ -187,6 +187,12 @@ class CasetaGuardian:
         self.termo_currently_heating = False
         self.last_termo_calc_time = time.time()
         
+        # Endoll Doble Cuina (LocalTuya: Microones/Torradora + Cafetera)
+        self.doble_status = {}
+        self.doble_kwh_today = 0.0
+        self.last_doble_update_time = 0.0
+        self.last_doble_calc_time = time.time()
+        
         # Protecció de Corrent i C-rate de Bateria
         self.c1_discharge_start_time = None
         self.c05_discharge_start_time = None
@@ -251,7 +257,8 @@ class CasetaGuardian:
                     self.termo_start_time_str = str(data.get("termo_start_time_str", ""))
                     self.termo_end_time_str = str(data.get("termo_end_time_str", ""))
                     self.termo_active_seconds_today = float(data.get("termo_active_seconds_today", 0.0))
-                    log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum (Termo: {self.termo_kwh_today:.2f} kWh, calfat: {self.termo_heated_today}).")
+                    self.doble_kwh_today = float(data.get("doble_kwh_today", 0.0))
+                    log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum (Termo: {self.termo_kwh_today:.2f} kWh, Cuina: {self.doble_kwh_today:.2f} kWh).")
             except Exception as e:
                 log.warning(f"No s'han pogut carregar acumulats previs: {e}")
 
@@ -650,6 +657,80 @@ class CasetaGuardian:
             log.error(f"Error fatal enviant comanda Termo Tuya Cloud: {e}")
             return False
 
+    def update_doble_status(self):
+        """Consulta periòdicament l'estat de l'Endoll Doble Cuina (Microones/Torradora + Cafetera) via LocalTuya LAN directa i publica a FlashMQ."""
+        now = time.time()
+        if now - self.last_doble_update_time < 20.0:
+            return
+        self.last_doble_update_time = now
+
+        cfg = load_config()
+        deviceId = cfg.get("tuya_doble_device_id", "bfc4299e2667184f13nv0z")
+        ip = cfg.get("tuya_doble_ip", "192.168.1.101")
+        local_key = cfg.get("tuya_doble_local_key", "1}[7q<mNG+ZE7Fkc")
+        version = float(cfg.get("tuya_doble_version", 3.3))
+
+        try:
+            import tinytuya
+            d = tinytuya.OutletDevice(deviceId, ip, local_key)
+            d.set_version(version)
+            d.set_socketPersistent(False)
+            data = d.status()
+            dps = data.get("dps", {})
+            if dps:
+                ch1_on = bool(dps.get("1", False))
+                ch2_on = bool(dps.get("2", False))
+                current_a = float(dps.get("18", 0)) / 1000.0
+                power_w = float(dps.get("19", 0)) / 10.0
+                voltage_v = float(dps.get("20", 0)) / 10.0
+
+                dt = now - getattr(self, "last_doble_calc_time", now)
+                self.last_doble_calc_time = now
+                if power_w >= 10.0:
+                    self.doble_kwh_today += (power_w / 1000.0) * (dt / 3600.0)
+
+                doble_data = {
+                    "ch1_name": "Microones / Torradora",
+                    "ch1_on": ch1_on,
+                    "ch2_name": "Cafetera",
+                    "ch2_on": ch2_on,
+                    "power_w": round(power_w, 1),
+                    "voltage_v": round(voltage_v, 1),
+                    "current_a": round(current_a, 2),
+                    "kwh_today": round(self.doble_kwh_today, 2),
+                    "source": "localtuya",
+                    "timestamp": now
+                }
+                self.doble_status = doble_data
+                if self.client:
+                    self.client.publish("caseta/endoll_doble", json.dumps({"value": doble_data}), retain=True)
+                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                        self.client.publish(f"N/{self.portal_id}/caseta/endoll_doble", json.dumps({"value": doble_data}), retain=True)
+                return
+        except Exception as e:
+            log.debug(f"LocalTuya endoll doble error: {e}")
+
+    def send_doble_tuya_command(self, channel: int, power: bool, reason: str = ""):
+        """Envia ordre d'encesa/apagada al canal 1 (Microones/Torradora) o 2 (Cafetera) via LocalTuya LAN."""
+        cfg = load_config()
+        deviceId = cfg.get("tuya_doble_device_id", "bfc4299e2667184f13nv0z")
+        ip = cfg.get("tuya_doble_ip", "192.168.1.101")
+        local_key = cfg.get("tuya_doble_local_key", "1}[7q<mNG+ZE7Fkc")
+        version = float(cfg.get("tuya_doble_version", 3.3))
+        ch_name = "Microones/Torradora (CH1)" if channel == 1 else "Cafetera (CH2)"
+
+        try:
+            import tinytuya
+            d = tinytuya.OutletDevice(deviceId, ip, local_key)
+            d.set_version(version)
+            d.set_socketPersistent(False)
+            res = d.set_status(power, channel)
+            log.info(f"🥐 [END OLL DOBLE LAN] {ch_name} Power {'ON' if power else 'OFF'} ({reason}): {res}")
+            return res
+        except Exception as e:
+            log.warning(f"Error enviant comanda a Endoll Doble per LAN: {e}")
+            return False
+
     def send_ac_tuya_command(self, power=1, temp=26, mode=0, fan=0, reason=""):
         """Envia ordres d'infrarojos al Mitsubishi Electric mitjançant Tuya Cloud OpenAPI i publica a MQTT."""
         now = time.time()
@@ -1005,6 +1086,7 @@ class CasetaGuardian:
             "termo_start_time_str": getattr(self, "termo_start_time_str", ""),
             "termo_end_time_str": getattr(self, "termo_end_time_str", ""),
             "termo_active_seconds_today": round(getattr(self, "termo_active_seconds_today", 0.0), 0),
+            "doble_kwh_today": round(getattr(self, "doble_kwh_today", 0.0), 2),
             "timestamp": time.time()
         }
         try:
@@ -1051,6 +1133,7 @@ class CasetaGuardian:
             self.termo_end_time_str = ""
             self.termo_active_seconds_today = 0.0
             self.termo_currently_heating = False
+            self.doble_kwh_today = 0.0
             log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str} (Festiu/CapSetmana: {self.is_holiday})")
 
         hours = dt / 3600.0
@@ -1124,38 +1207,32 @@ class CasetaGuardian:
             self.save_daily_stats()
 
     def evaluate_termo_surplus(self, now_madrid):
-        """Avalua l'encesa autònoma del Termo Elèctric per excedents solars diürns (11:30h - 15:30h)."""
+        """Gestiona l'engegada automàtica del Termo Elèctric (Desviador d'Excedents Solar) i Arbitratge P3."""
         now = time.time()
-        hour = now_madrid.hour
-        minute = now_madrid.minute
-        time_decimal = hour + (minute / 60.0)
+        current_hour = now_madrid.hour
+        current_minute = now_madrid.minute
+        time_decimal = current_hour + (current_minute / 60.0)
 
-        # Reset diari a mitjanit
-        today_str = now_madrid.strftime("%Y-%m-%d")
-        if getattr(self, "termo_day_str", "") != today_str:
-            self.termo_day_str = today_str
-            self.termo_heated_today = False
-            self.termo_low_power_start_time = None
+        # Estat actual del termo segons l'endoll Tuya
+        is_on = self.termo_status.get("is_on", False)
+        termo_p = self.termo_status.get("power_w", 0.0)
 
-        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
-        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
-
-        # Si el termo ja està encès:
-        if termo_on:
-            # 1. Comprovació d'Aigua Calenta a 60ºC (Termòstat Ariston talla -> Potència < 50W durant 2 min)
+        # Si el termo està encès, avaluem quan cal apagar-lo:
+        if is_on:
+            # 1. Termòstat Intern Assolit (<50W durant >2 minuts) -> Aigua calenta a 60ºC
             if termo_p < 50.0:
                 if self.termo_low_power_start_time is None:
                     self.termo_low_power_start_time = now
                 elif now - self.termo_low_power_start_time >= 120.0:
                     self.send_termo_tuya_command(
                         power=False,
-                        reason="✅ Aigua calenta a 60ºC assolida (Consum <50W durant 2 min) -> Pasteurització Completada"
+                        reason="♨️ Termòstat Ariston Assolit: Consum <50W durant >2 min -> Aigua calenta a 60ºC!"
                     )
                     self.send_notification(
-                        "♨️ Aigua Calenta a 60ºC Assolida!",
-                        "El termo ha arribat a 60ºC i ha completat la pasteurització anti-legionel·la. Apagat per a la resta del dia!",
+                        "♨️ Aigua Calenta a 60ºC Assolida",
+                        f"El termo ha completat el cicle tèrmic ({termo_p:.0f}W). Dipòsit a 60ºC!",
                         "default",
-                        "check"
+                        "bath"
                     )
                     self.termo_heated_today = True
                     self.termo_low_power_start_time = None
@@ -1247,6 +1324,11 @@ class CasetaGuardian:
                 self.send_termo_tuya_command(power=False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Termo Incondicional")
                 self.send_notification("🚨 Blindatge Total SAI", "Bateria <45%! S'ha desconnectat incondicionalment el termo per blindar la reserva nocturna.", "high", "zap")
                 self.termo_cut_off_today = True
+            # Tall d'emergència a l'Endoll Doble Cuina (Microones/Torradora + Cafetera)
+            if self.doble_status.get("ch1_on", False):
+                self.send_doble_tuya_command(1, False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Microones/Torradora")
+            if self.doble_status.get("ch2_on", False):
+                self.send_doble_tuya_command(2, False, reason="🚨 Blindatge Total: Bateria <45% -> Desconnexió Cafetera")
         elif self.soc >= 60.0:
             self.termo_cut_off_today = False
 
@@ -1257,9 +1339,13 @@ class CasetaGuardian:
             elif now - self.c1_discharge_start_time >= 15.0:
                 self.send_ac_tuya_command(power=0, reason="🚨 Tall 1C: Descàrrega >70A (>15s)")
                 self.send_termo_tuya_command(power=False, reason="🚨 Tall 1C: Descàrrega >70A (>15s)")
+                if self.doble_status.get("ch1_on", False):
+                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 1C: Desconnexió Microones/Torradora")
+                if self.doble_status.get("ch2_on", False):
+                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 1C: Desconnexió Cafetera")
                 self.send_notification(
                     "🚨 Sobrecorrent Crític Bateria",
-                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=1C / ~3.5kW) durant >15s! S'han desconnectat l'AC i el Termo per protegir les cel·les LiFePO4.",
+                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=1C / ~3.5kW) durant >15s! S'han desconnectat l'AC, Termo i Cuina per protegir les cel·les LiFePO4.",
                     "high",
                     "warning"
                 )
@@ -1274,9 +1360,13 @@ class CasetaGuardian:
             elif now - self.c05_discharge_start_time >= 180.0:
                 self.send_ac_tuya_command(power=0, reason="🚨 Tall 0.5C: Descàrrega sostinguda >34A (>3 min)")
                 self.send_termo_tuya_command(power=False, reason="🚨 Tall 0.5C: Descàrrega sostinguda >34A (>3 min)")
+                if self.doble_status.get("ch1_on", False):
+                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 0.5C: Desconnexió Microones/Torradora")
+                if self.doble_status.get("ch2_on", False):
+                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 0.5C: Desconnexió Cafetera")
                 self.send_notification(
                     "🚨 Sobrecàrrega Sostinguda Bateria",
-                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=34A / ~1.7kW) durant >3 minuts! S'han apagat l'AC i el Termo per evitar estrès tèrmic.",
+                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=34A / ~1.7kW) durant >3 minuts! S'han apagat l'AC, Termo i Cuina per evitar estrès tèrmic.",
                     "high",
                     "warning"
                 )
@@ -1426,6 +1516,7 @@ class CasetaGuardian:
                 self.update_energy_forecast()
                 self.update_inforatge()
                 self.update_termo_status()
+                self.update_doble_status()
                 self.update_energy_integrals(now_madrid)
                 self.evaluate_state_machine(now_madrid)
                 self.evaluate_climate_control(now_madrid)

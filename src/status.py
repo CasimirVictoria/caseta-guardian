@@ -93,6 +93,7 @@ def get_telemetry():
     mqtt_inforatge = [None]
     mqtt_ac = [None]
     mqtt_termo = [None]
+    mqtt_doble = [None]
 
     def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe("N/+/battery/512/#")
@@ -119,6 +120,8 @@ def get_telemetry():
                 mqtt_ac[0] = val
             elif "caseta/termo" in msg.topic:
                 mqtt_termo[0] = val
+            elif "caseta/endoll_doble" in msg.topic:
+                mqtt_doble[0] = val
             elif "caseta/clima" in msg.topic:
                 raw_json = json.loads(msg.payload.decode())
                 mqtt_clima[0] = raw_json.get("value") if isinstance(raw_json, dict) and "value" in raw_json else raw_json
@@ -133,7 +136,7 @@ def get_telemetry():
         client.connect(CERBO_IP, 1883, 2)
     except Exception as e:
         print(f"{RED}Error connectant al Cerbo GX ({CERBO_IP}): {e}{RESET}")
-        return {}, None, None, None, None, None, None, None
+        return {}, None, None, None, None, None, None, None, None
 
     client.loop_start()
     start = time.time()
@@ -152,7 +155,7 @@ def get_telemetry():
         
     client.loop_stop()
     client.disconnect()
-    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0], mqtt_inforatge[0], mqtt_ac[0], mqtt_termo[0]
+    return data, found_portal[0], mqtt_stats[0], mqtt_forecast[0], mqtt_clima[0], mqtt_inforatge[0], mqtt_ac[0], mqtt_termo[0], mqtt_doble[0]
 
 def get_forecast(mqtt_forecast=None):
     if mqtt_forecast:
@@ -241,7 +244,7 @@ def main():
     now_ts = datetime.datetime.now().strftime("%d/%m/%Y - %H:%M:%S")
     print(f"{DIM}🕒 Registre en directe: {now_ts}{RESET}\n")
     
-    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima, mqtt_inforatge, mqtt_ac, mqtt_termo = get_telemetry()
+    data, portal, mqtt_stats, mqtt_forecast, mqtt_clima, mqtt_inforatge, mqtt_ac, mqtt_termo, mqtt_doble = get_telemetry()
     if not data or not portal:
         print(f"{RED}No s'han pogut obtenir dades del Cerbo GX.{RESET}\n")
         return
@@ -442,6 +445,21 @@ def main():
             else:
                 termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}]"
             print(box_line(f"   • {BOLD}Termo Elèctric:{RESET}        {termo_str}"))
+
+        # Endoll Doble Cuina (Microones/Torradora & Cafetera)
+        if mqtt_doble and isinstance(mqtt_doble, dict):
+            ch1_on = mqtt_doble.get("ch1_on", False)
+            ch2_on = mqtt_doble.get("ch2_on", False)
+            p_w = mqtt_doble.get("power_w", 0.0)
+            kwh = mqtt_doble.get("kwh_today", 0.0)
+
+            ch1_str = f"{GREEN}Encès{RESET}" if ch1_on else f"{DIM}Apagat{RESET}"
+            ch2_str = f"{GREEN}Encès{RESET}" if ch2_on else f"{DIM}Apagat{RESET}"
+            p_str = f" ({p_w:.0f} W)" if (ch1_on or ch2_on) and p_w > 0 else ""
+            kwh_str = f" | {BOLD}{kwh:.2f} kWh{RESET}" if kwh > 0 else ""
+
+            print(box_line(f"   • {BOLD}Cuina (Microones/Torr.):{RESET}  [{ch1_str}]{p_str}{kwh_str}"))
+            print(box_line(f"   • {BOLD}Cuina (Cafetera):{RESET}        [{ch2_str}]"))
 
         # Inforatge Ador
         if mqtt_inforatge and mqtt_inforatge.get("temperatura") is not None:
