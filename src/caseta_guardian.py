@@ -742,27 +742,11 @@ class CasetaGuardian:
                 self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🌙 Horari Nocturn: Descans a 26.5ºC (Ventilador Auto)")
             return
 
-        # ☀️ LLEI 3: Escala Solar Dinàmica Diürna (Només s'activa el Supercooling si el Termo ja ha escalfat l'aigua a 60ºC)
-        termo_fet = getattr(self, "termo_heated_today", False)
-
-        if termo_fet:
-            # Graó 1: Super-Excedent Solar Post-Termo (Sol >= 600W & SoC >= 85%) -> 22ºC + Ventilador Alt (3)
-            if self.pv_p >= 600.0 and self.soc >= 85.0:
-                if self.ac_current_power != 1 or self.ac_current_temp != 22:
-                    self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Graó 1: Supercooling Post-Termo ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 22ºC (Ventilador Alt)")
-                return
-
-            # Graó 2: Transició Tarda / Excedent Moderat Post-Termo (Sol >= 250W & SoC >= 79%) -> 24ºC + Ventilador Auto (0)
-            if self.pv_p >= 250.0 and self.soc >= 79.0:
-                if self.ac_current_power != 1 or self.ac_current_temp != 24:
-                    self.send_ac_tuya_command(power=1, temp=24, mode=0, fan=0, reason=f"🌤️ Graó 2: Excedent Moderat Post-Termo ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 24ºC (Ventilador Auto)")
-                return
-
-        # Graó 3: Confort Base Permanent Diürn (26ºC abans que el termo acabe o amb bateria normal)
+        # ☀️ LLEI 3: Confort Bioclimàtic Estable Diürn (26.0ºC Permanent)
+        # La bateria mateixa absorbeix tot el sol de migdia gràcies al Vas Buit creat pel termo!
         if self.soc >= 69.0:
             if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                motiu = "🏰 Matí Pre-Termo: Confort Base Estable a 26ºC" if not termo_fet else f"🏰 Confort Base Estable a 26ºC (SoC {self.soc:.1f}%)"
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason=motiu)
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason=f"🏰 Confort Diürn Estable a 26.0ºC (SoC {self.soc:.1f}%)")
         else:
             # Bateria Baixa (<69%) I repòs >30 min -> Mode Eco 28ºC per protegir el coixí
             time_since_presence = now - self.last_presence_seen_time
@@ -850,15 +834,26 @@ class CasetaGuardian:
 
         # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W)
         if termo_on and termo_p >= 500.0:
-            if self.soc >= 84.0:
-                target = 400.0
-                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) & SoC {self.soc:.1f}% >= 84% -> Setpoint 400W (Vas Buit)"
-            elif self.soc >= 78.0:
-                target = 600.0
-                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) & SoC {self.soc:.1f}% >= 78% -> Setpoint 600W (Transició Suau)"
+            sol_bonic = (getattr(self, "today_kwh_est", 0.0) >= 4.5) or (getattr(self, "remaining_kwh_today", 0.0) >= 3.0)
+            if sol_bonic:
+                # ☀️ Dia Clar / Assolellat: Deixar que la bateria ajude a 200W per crear el Vas Buit fins al 70%
+                if self.soc >= 72.0:
+                    target = 200.0
+                    reason = f"♨️ Termo ({termo_p:.0f}W) & Sol Previst {self.today_kwh_est:.1f}kWh (SoC {self.soc:.1f}% >= 72%) -> Setpoint 200W (Buidant Vas)"
+                elif self.soc >= 68.0:
+                    target = 500.0
+                    reason = f"♨️ Termo ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 72% -> Setpoint 500W (Frenant Descàrrega)"
+                else:
+                    target = 800.0
+                    reason = f"♨️ Termo ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 68% -> Setpoint 800W (Sòl Segur Bateria)"
             else:
-                target = 800.0
-                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 78% -> Setpoint 800W (Blindatge Total)"
+                # ☁️ Dia Ennuvolat (<4.5 kWh): Xarxa a 800W per no buidar la bateria sense sol
+                if self.soc >= 85.0:
+                    target = 400.0
+                    reason = f"☁️ Dia Ennuvolat & Termo ({termo_p:.0f}W) -> Setpoint 400W"
+                else:
+                    target = 800.0
+                    reason = f"☁️ Dia Ennuvolat & Termo ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 85% -> Setpoint 800W (Protecció Sense Sol)"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS
         else:
@@ -1102,7 +1097,11 @@ class CasetaGuardian:
             # Condició d'Excedent: SoC >= 83.0% i Sol Huawei >= 500W (abans de pujar de 85% per donar prioritat a l'aigua)
             if self.soc >= 83.0 and self.pv_p >= 500.0:
                 # 🔌 1. Pre-rampa de xarxa dinàmica i ❄️ Pre-Peak Shaving AC (27ºC) 4s ABANS per blindar la bateria
-                pre_target = 400.0 if self.soc >= 84.0 else (600.0 if self.soc >= 78.0 else 800.0)
+                sol_bonic = (getattr(self, "today_kwh_est", 0.0) >= 4.5) or (getattr(self, "remaining_kwh_today", 0.0) >= 3.0)
+                if sol_bonic:
+                    pre_target = 200.0 if self.soc >= 72.0 else (500.0 if self.soc >= 68.0 else 800.0)
+                else:
+                    pre_target = 400.0 if self.soc >= 85.0 else 800.0
                 try:
                     import dbus
                     bus = dbus.SystemBus()
