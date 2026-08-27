@@ -832,31 +832,45 @@ class CasetaGuardian:
 
     def sync_grid_setpoint(self):
         """Modula dinàmicament el Grid Setpoint de Victron ESS:
-        - Termo Actiu (>=500W): 800.0 W (Suport de xarxa per protegir la bateria del cicle de 1.250W)
-        - Termo en Repòs & SoC < 90%: 200.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
-        - Termo en Repòs & SoC >= 90%: 50.0 W (Reducció d'importació quan la bateria està plena)
+        - Amb Termo Actiu (>=500W):
+            • SoC >= 84%: 400.0 W (Estalvi màxim de xarxa i creació del 'Vas Buit' per al sol de migdia)
+            • 78% <= SoC < 84%: 600.0 W (Transició suau frenant la descàrrega)
+            • SoC < 78%: 800.0 W (Blindatge total contra descàrrega)
+        - Amb Termo en Repòs:
+            • SoC < 90%: 200.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
+            • SoC >= 90%: 50.0 W (Reducció d'importació quan la bateria està plena)
         """
         now = time.time()
-        if now - self.last_grid_setpoint_eval_time < 30:
+        if now - self.last_grid_setpoint_eval_time < 20:
             return
         self.last_grid_setpoint_eval_time = now
 
         termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
         termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
 
-        # ♨️ 1. Prioritat Suport Termo Elèctric (800 W de xarxa per evitar descàrrega de bateria)
+        # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W)
         if termo_on and termo_p >= 500.0:
-            target = 800.0
-            reason = f"♨️ Suport Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W per protegir bateria"
-        elif self.soc >= 90.0:
-            target = 50.0
-            reason = f"🔋 Bateria Plena ({self.soc:.1f}% >= 90%) -> Setpoint reduït a 50W"
-        elif self.soc < 87.0:
-            target = 200.0
-            reason = f"⚡ Bateria en càrrega ({self.soc:.1f}% < 87%) -> Setpoint a 200W (Amortidor Basal)"
+            if self.soc >= 84.0:
+                target = 400.0
+                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) & SoC {self.soc:.1f}% >= 84% -> Setpoint 400W (Vas Buit)"
+            elif self.soc >= 78.0:
+                target = 600.0
+                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) & SoC {self.soc:.1f}% >= 78% -> Setpoint 600W (Transició Suau)"
+            else:
+                target = 800.0
+                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) & SoC {self.soc:.1f}% < 78% -> Setpoint 800W (Blindatge Total)"
+
+        # ☕ 2. GESTIÓ AMB TERMO EN REPÒS
         else:
-            target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 200.0
-            reason = "Estable"
+            if self.soc >= 90.0:
+                target = 50.0
+                reason = f"🔋 Bateria Plena ({self.soc:.1f}% >= 90%) -> Setpoint 50W (Estalvi Màxim)"
+            elif self.soc < 87.0:
+                target = 200.0
+                reason = f"⚡ Bateria en càrrega ({self.soc:.1f}% < 87%) -> Setpoint 200W (Amortidor Basal)"
+            else:
+                target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 200.0
+                reason = "Estable"
 
         if self.last_grid_setpoint != target:
             try:
@@ -1087,16 +1101,17 @@ class CasetaGuardian:
         elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
             # Condició d'Excedent: SoC >= 83.0% i Sol Huawei >= 500W (abans de pujar de 85% per donar prioritat a l'aigua)
             if self.soc >= 83.0 and self.pv_p >= 500.0:
-                # 🔌 1. Pre-rampa de xarxa (800W) i ❄️ Pre-Peak Shaving AC (27ºC) 4s ABANS per blindar la bateria
+                # 🔌 1. Pre-rampa de xarxa dinàmica i ❄️ Pre-Peak Shaving AC (27ºC) 4s ABANS per blindar la bateria
+                pre_target = 400.0 if self.soc >= 84.0 else (600.0 if self.soc >= 78.0 else 800.0)
                 try:
                     import dbus
                     bus = dbus.SystemBus()
                     obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
-                    obj.SetValue(dbus.Double(800.0), dbus_interface="com.victronenergy.BusItem")
-                    self.last_grid_setpoint = 800.0
-                    log.info("🔌 [PRE-RAMPA] Grid Setpoint a 800W i AC modulat a 27ºC. Esperant 4s d'amortidor previ a l'encesa del Termo...")
+                    obj.SetValue(dbus.Double(pre_target), dbus_interface="com.victronenergy.BusItem")
+                    self.last_grid_setpoint = pre_target
+                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {pre_target:.0f}W i AC modulat a 27ºC. Esperant 4s d'amortidor previ a l'encesa del Termo...")
                 except Exception as e:
-                    log.warning(f"Error establint pre-rampa de 800W a D-Bus: {e}")
+                    log.warning(f"Error establint pre-rampa a D-Bus: {e}")
 
                 # Enviar AC a 27ºC immediatament
                 self.send_ac_tuya_command(power=1, temp=27, mode=0, fan=0, reason="♨️ Pre-Peak Shaving: Preparant encesa de Termo (AC a 27ºC)")
