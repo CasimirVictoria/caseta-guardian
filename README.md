@@ -97,39 +97,171 @@ Unlike conventional off-grid setups that cycle the battery deeply every single d
 
 ---
 
-## 🏛️ The 4 Fundamental Priority Laws & Dynamic Load Management
+## 🗺️ System Architecture & Hardware Topology Scheme
+
+```mermaid
+graph TD
+    subgraph EXTERIOR ["☀️ EXTERNAL ENVIRONMENT & GRIDS"]
+        SUN["☀️ Ador Solar Irradiance"]
+        GRID["🔌 Rural Utility Grid (2.0TD Imagina Energía 1.15kW)"]
+        METEO["🌤️ External APIs: Open-Meteo & Inforatge Ador"]
+    end
+
+    subgraph GENERACIO ["⚡ POWER GENERATION & STORAGE"]
+        HUAWEI["☀️ Huawei Sun2000 1.35 kW Solar Inverter (AC-Out)"]
+        PYLON["🔋 Pylontech US3000C Battery (48V LiFePO4 / 3.55 kWh)"]
+        MULTI["🔌 Victron MultiPlus-II 24/3000 (Bidirectional Inverter/Charger)"]
+    end
+
+    subgraph CONTROL ["🧠 CERBO GX (VENUS OS IN PRODUCTION)"]
+        DBUS["🚌 Victron D-Bus & Settings (/Settings/CGwacs/...)"]
+        MQTT["🔄 FlashMQ Local Broker (127.0.0.1:1883)"]
+        GUARDIAN["🛡️ caseta_guardian.py (Native Daemontools Service)"]
+        ZIGBEE_DAEMON["📡 caseta-zigbee (Pure-Python zigpy Driver)"]
+    end
+
+    subgraph DOMOTICA ["🏰 CLIMATE & DOMOTIC CONSUMERS"]
+        ZIG_SENS["🌡️ Zigbee 3.0 Multisensors (Living Room + Kids Room)"]
+        TUYA_IR["❄️ Tuya IR S06 Blaster -> Air Conditioner"]
+        TERMO_PLUG["♨️ LocalTuya Smart Plug -> Ariston 100L Water Heater (1.25kW)"]
+        HOUSE_LOADS["💡 Base House Loads (Refrigerator, 4G Router, Lighting)"]
+    end
+
+    SUN --> HUAWEI
+    GRID <--> MULTI
+    PYLON <--> MULTI
+    HUAWEI --> MULTI
+    MULTI --> HOUSE_LOADS
+
+    MULTI -.-> DBUS
+    PYLON -.-> DBUS
+    HUAWEI -.-> DBUS
+    DBUS <--> MQTT
+    MQTT <--> GUARDIAN
+    METEO --> GUARDIAN
+
+    ZIGBEE_DAEMON <--> ZIG_SENS
+    ZIGBEE_DAEMON --> MQTT
+    GUARDIAN --> TUYA_IR
+    GUARDIAN <--> TERMO_PLUG
+```
+
+---
+
+## 🔄 Guardià State Machine & Decision Flowchart
+
+This is the exact execution and decision graph processed every second by the Guardian daemon:
+
+```mermaid
+flowchart TD
+    START(["🚀 Loop Cycle Start (Every 1s)"]) --> LLEI_SAI{"🚨 Battery SoC < 50%?"}
+
+    %% ESCUT SAI
+    LLEI_SAI -- "YES (SoC < 50%)" --> AC_OFF["❄️ Turn OFF AC Immediately (SAI Shield)"]
+    AC_OFF --> TERMO_35{"🚨 SoC < 35%?"}
+    TERMO_35 -- "YES" --> TERMO_CUT["🚨 Cut Water Heater in <20ms + Critical Notification"]
+    TERMO_35 -- "NO" --> CHECK_CRATE
+
+    LLEI_SAI -- "NO (SoC >= 50%)" --> FREE_COOLING{"🍃 T_ext < 25ºC (>20 min) & T_int < 28ºC?"}
+
+    %% FREE-COOLING
+    FREE_COOLING -- "YES" --> AC_FC_OFF["🍃 Turn OFF AC Silently (Zero Notification)"]
+    AC_FC_OFF --> CHECK_TERMO
+    FREE_COOLING -- "NO" --> FC_REARM{"Re-arm AC? (T_int >= 28.8ºC or T_ext >= 27ºC)"}
+    FC_REARM -- "YES" --> REARM_AC["Re-activate Climate Control"] --> CHECK_TERMO
+    FC_REARM -- "NO" --> CHECK_TERMO
+
+    %% TERMO SURPLUS
+    CHECK_TERMO{"♨️ Water Heater State"} --> TERMO_ON_CHECK{"Water Heater ON?"}
+
+    TERMO_ON_CHECK -- "YES" --> TERMO_P_CHECK{"Power < 50W for > 2 min?"}
+    TERMO_P_CHECK -- "YES (60ºC Target Reached)" --> TERMO_FINISH["✅ Termo OFF (Job Done for the Day) <br> termo_heated_today = True"]
+    TERMO_P_CHECK -- "NO" --> TERMO_SOC_PAUSE{"SoC < 65%?"}
+    TERMO_SOC_PAUSE -- "YES" --> TERMO_PAUSE["⏸️ Cloud Safety Pause (Termo OFF)"]
+    TERMO_SOC_PAUSE -- "NO" --> SET_GRID_800["🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
+
+    TERMO_ON_CHECK -- "NO" --> TERMO_START_CHECK{"termo_heated_today = False & <br> SoC >= 83% & Solar >= 500W?"}
+    TERMO_START_CHECK -- "YES" --> TERMO_START["♨️ Turn ON Termo via LocalTuya <br> 🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
+    TERMO_START_CHECK -- "NO" --> AC_CLIMATE_LADDER
+
+    %% ESCALA CLIMA AC
+    AC_CLIMATE_LADDER{"❄️ Daytime Climate Ladder"}
+    TERMO_FINISH --> AC_CLIMATE_LADDER
+    TERMO_PAUSE --> AC_CLIMATE_LADDER
+    SET_GRID_800 --> CHECK_CRATE
+
+    AC_CLIMATE_LADDER --> POST_TERMO_CHECK{"termo_heated_today = True?"}
+    POST_TERMO_CHECK -- "YES (Termo Done)" --> GRAO_1{"Solar >= 600W & SoC >= 85%?"}
+    GRAO_1 -- "YES" --> AC_22["❄️ AC to 22.0ºC (High Fan - Supercooling)"]
+    GRAO_1 -- "NO" --> GRAO_2{"Solar >= 250W & SoC >= 79%?"}
+    GRAO_2 -- "YES" --> AC_24["🌤️ AC to 24.0ºC (Auto Fan)"]
+    GRAO_2 -- "NO" --> AC_26["🏰 AC to 26.0ºC (Base Comfort)"]
+
+    POST_TERMO_CHECK -- "NO (Morning Pre-Termo)" --> AC_PRE_26["🏰 AC to 26.0ºC (Base Comfort Pre-Termo)"]
+
+    %% PROTECCIÓ C-RATE & GRID SETPOINT
+    AC_22 --> CHECK_CRATE
+    AC_24 --> CHECK_CRATE
+    AC_26 --> CHECK_CRATE
+    AC_PRE_26 --> CHECK_CRATE
+
+    CHECK_CRATE{"⚡ Battery C-Rate Protection"}
+    CHECK_CRATE -- "Discharge >= 70A (>15s)" --> CRATE_1C["🚨 1C Emergency Cut: AC and Termo OFF"]
+    CHECK_CRATE -- "Discharge >= 34A (>3 min)" --> CRATE_05C["⚠️ 0.5C Thermal Stress Cut: AC and Termo OFF"]
+    CHECK_CRATE -- "Normal" --> DYN_GRID
+
+    DYN_GRID{"🔌 Dynamic Grid Setpoint (Termo Idle)"}
+    DYN_GRID -- "SoC >= 88%" --> GRID_50["🌿 Grid Setpoint = 50 W"]
+    DYN_GRID -- "SoC < 85%" --> GRID_150["⚡ Grid Setpoint = 150 W"]
+
+    GRID_50 --> MEMORY_SAVE
+    GRID_150 --> MEMORY_SAVE
+    CRATE_1C --> MEMORY_SAVE
+    CRATE_05C --> MEMORY_SAVE
+
+    MEMORY_SAVE{"💾 eMMC Data Checkpoint"}
+    MEMORY_SAVE -- "Every 30 minutes or at midnight" --> WRITE_FLASH["💾 Write caseta_daily_stats.json (300 bytes)"]
+    MEMORY_SAVE -- "Regular loop" --> END_LOOP(["🏁 End Loop Cycle (Sleep 1s)"])
+    WRITE_FLASH --> END_LOOP
+```
+
+---
+
+## 🏛️ The Fundamental Priority Laws & Load Management
 
 ```
   ┌────────────────────────────────────────────────────────────────────────┐
-  │ 1. 🛡️ BATTERY CHEMICAL HEALTH & TWO-TIER DEFENSIVE SHIELD (Priority 0) │
+  │ 0. 🍃 BIOCLIMATIC SILENT FREE-COOLING (Priority 0 - Nighttime)         │
+  │    • If Text < 25.0 ºC sustained for >20 mins & Tint < 28.0 ºC          │
+  │      -> Turn AC OFF silently with zero push notifications.             │
+  │    • Re-arm if Tint >= 28.8 ºC (regardless of outdoor) or Text >= 27 ºC│
+  ├────────────────────────────────────────────────────────────────────────┤
+  │ 1. 🛡️ BATTERY HEALTH & TWO-TIER DEFENSIVE SHIELD (Priority 1)          │
   │    • Overnight 100% Top-Balancing using off-peak electricity rates.    │
-  │    • Instant grid reconnection if discharge exceeds 15 A (>750 W)      │
-  │      for >5 s or if SoC drops below 80% in islanded Mode 2.            │
   │    • ⚡ 1C Protection (>=70A / ~3.5 kW for >15s): Emergency AC+Termo cut.│
   │    • ⚡ 0.5C Protection (>=34A / ~1.7 kW for >3 min): Thermal stress cut. │
-  │    • ❄️ TIER 1 (SoC < 50%): Preventative AC shutdown via Tuya Cloud IR.│
-  │    • 🚨 TIER 2 (SoC < 45%): Complete load cutoff (AC + Water Heater    │
-  │      smart plug OFF). Guarantees 1.12 kWh down to the 10% BMS hardware │
-  │      floor (14 hours uninterrupted UPS runtime for fridge & router).   │
+  │    • ❄️ TIER 1 (SoC < 50%): Preventative AC shutdown via Tuya IR.      │
+  │    • 🚨 TIER 2 (SoC < 35%): Unconditional Termo disconnect in <20 ms   │
+  │      via LocalTuya LAN socket. Shields >10h of night UPS capacity.     │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 2. ♨️ DYNAMIC LOAD MANAGEMENT & PEAK SHAVING (Priority 1)              │
-  │    • Smart coordination between Water Heater (100L / 1200W) and AC:    │
-  │    • When water heater is actively heating (>=500W), AC modulates to   │
-  │      27.0 ºC (Auto Fan), instantly releasing ~700W of capacity.        │
-  │    • Strictly respects the 5A (1.15 kW) contracted grid power limit    │
-  │      and prevents rural line voltage sags (<210V).                     │
+  │ 2. ♨️ SOLAR SURPLUS WATER HEATING & PEAK SHAVING (Priority 2)          │
+  │    • Auto-activation when SoC >= 83.0% and Huawei Solar >= 500 W.       │
+  │    • Modulate AC to 27.0 ºC (Peak Shaving), releasing 600W.            │
+  │    • 🔌 Dynamic Grid Support to 800 W to shield battery from discharge.│
+  │    • Auto-cutoff at 60.0 ºC: Power <50W for 2 min -> Termo OFF for day.│
+  │    • Cloud safety pause if SoC dips below 65%.                         │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 3. 🔌 RESILIENCE & METEOROLOGICAL UPS (Priority 2)                     │
-  │    • Automated weather modeling via Open-Meteo API every 60 minutes.   │
-  │    • High Blackout Risk trigger (Tmax >= 38ºC, T21h >= 31ºC, or low    │
-  │      grid voltage <190V) locks the reserve floor to 95% – 100%.        │
+  │ 3. ❄️ DAYTIME SOLAR CLIMATE LADDER (Priority 3)                        │
+  │    • ☕ Morning Pre-Termo: AC at gentle 26.0 ºC (Auto Fan).            │
+  │    • ☀️ Step 1 Post-Termo (Solar >= 600W & SoC >= 85%): AC to 22.0 ºC. │
+  │    • 🌤️ Step 2 Post-Termo (Solar >= 250W & SoC >= 79%): AC to 24.0 ºC. │
+  │    • 🏰 Step 3 Return to Comfort (SoC < 79% or normal): AC to 26.0 ºC. │
+  │    • 🌙 Night Mode (23h - 08h): Restful 26.5 ºC (Auto Fan).            │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 4. ☀️ MAXIMUM SOLAR HARVEST & CLIMATE LADDER (Priority 3)              │
-  │    • ☀️ Step 1 (Midday Solar >=600W, SoC >=85%): AC to 22ºC (High Fan). │
-  │    • 🌤️ Step 2 (Afternoon Solar >=250W or >16h, SoC >=75-80%): AC 24ºC.│
-  │    • ☕ Step 3 (Daytime Base SoC >=69%): AC to 26ºC (Auto Fan).        │
-  │    • 🌙 Night Mode (23h - 08h): AC to gentle 26.5ºC for restful sleep. │
-  │    • 4-Milestone Clock Schedule (100% / 85% / 75% / 85% SoC floors).   │
+  │ 4. 🔌 DYNAMIC VICTRON ESS GRID SETPOINT (Priority 4)                   │
+  │    • Termo Active (>=500W): 800 W (Grid assist protects battery cells).│
+  │    • Termo Idle & SoC < 88%: 150 W (Sturdy base buffer & anti-export). │
+  │    • Termo Idle & SoC >= 88%: 50 W (Maximum grid savings with solar).  │
   └────────────────────────────────────────────────────────────────────────┘
 ```
 

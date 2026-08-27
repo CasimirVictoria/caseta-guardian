@@ -97,46 +97,173 @@ A diferència dels sistemes aïllats convencionals que buiden la bateria cada di
 
 ---
 
-## 🏛️ Les 4 Lleis Fonamentals de Prioritat & Gestió de Càrregues
+## 🗺️ Esquema Integral d'Arquitectura i Topologia del Sistema
+
+```mermaid
+graph TD
+    subgraph EXTERIOR ["☀️ ENTORNS I XARXES EXTERIORS"]
+        SUN["☀️ Sol d'Ador (Radiació Solar)"]
+        GRID["🔌 Línia Elèctrica Rural (2.0TD Imagina Energía 1.15kW)"]
+        METEO["🌤️ APIs Externe: Open-Meteo & Inforatge Ador"]
+    end
+
+    subgraph GENERACIO ["⚡ GENERACIÓ I BATERIA"]
+        HUAWEI["☀️ Inversor Solar Huawei 1.35 kW (AC-Out)"]
+        PYLON["🔋 Bateria Pylontech US3000C (48V LiFePO4 / 3.55 kWh)"]
+        MULTI["🔌 Victron MultiPlus-II 24/3000 (Inversor/Carregador Bidireccional)"]
+    end
+
+    subgraph CONTROL ["🧠 CERBO GX (VENUS OS EN PRODUCCIÓ)"]
+        DBUS["🚌 Victron D-Bus & Settings (/Settings/CGwacs/...)"]
+        MQTT["🔄 Broker FlashMQ (127.0.0.1:1883)"]
+        GUARDIAN["🛡️ caseta_guardian.py (Servei Natiu Daemontools)"]
+        ZIGBEE_DAEMON["📡 caseta-zigbee (Driver Natiu Pure-Python zigpy)"]
+    end
+
+    subgraph DOMOTICA ["🏰 CLIMATITZACIÓ I CONSUMS DOMÒTICS"]
+        ZIG_SENS["🌡️ Sensors Zigbee 3.0 (Saló + Xiquets)"]
+        TUYA_IR["❄️ Emissor Tuya IR S06 -> Aire Condicionat"]
+        TERMO_PLUG["♨️ Endoll Intel·ligent LocalTuya -> Termo Ariston 100L (1.25kW)"]
+        HOUSE_LOADS["💡 Consums Basals Caseta (Nevera, Router, Il·luminació)"]
+    end
+
+    SUN --> HUAWEI
+    GRID <--> MULTI
+    PYLON <--> MULTI
+    HUAWEI --> MULTI
+    MULTI --> HOUSE_LOADS
+
+    MULTI -.-> DBUS
+    PYLON -.-> DBUS
+    HUAWEI -.-> DBUS
+    DBUS <--> MQTT
+    MQTT <--> GUARDIAN
+    METEO --> GUARDIAN
+
+    ZIGBEE_DAEMON <--> ZIG_SENS
+    ZIGBEE_DAEMON --> MQTT
+    GUARDIAN --> TUYA_IR
+    GUARDIAN <--> TERMO_PLUG
+```
+
+---
+
+## 🔄 Diagrama de Flux i Màquina d'Estats del Guardià
+
+Aquest és l'esquema exacte de decisions que executa el Guardià cada segon:
+
+```mermaid
+flowchart TD
+    START(["🚀 Inici de Cicle (Cada Segon)"]) --> LLEI_SAI{"🚨 Bateria SoC < 50%?"}
+
+    %% ESCUT SAI
+    LLEI_SAI -- "SÍ (SoC < 50%)" --> AC_OFF["❄️ Apagar AC Immediatament (Escut SAI)"]
+    AC_OFF --> TERMO_35{"🚨 SoC < 35%?"}
+    TERMO_35 -- "SÍ" --> TERMO_CUT["🚨 Tall Incondicional Termo en <20ms + Notificació Crítica"]
+    TERMO_35 -- "NO" --> CHECK_CRATE
+
+    LLEI_SAI -- "NO (SoC >= 50%)" --> FREE_COOLING{"🍃 T_ext < 25ºC (>20 min) & T_int < 28ºC?"}
+
+    %% FREE-COOLING
+    FREE_COOLING -- "SÍ" --> AC_FC_OFF["🍃 Apagar AC Silenciadament (Sense Notificació)"]
+    AC_FC_OFF --> CHECK_TERMO
+    FREE_COOLING -- "NO" --> FC_REARM{"Re-armar AC? (T_int >= 28.8ºC o T_ext >= 27ºC)"}
+    FC_REARM -- "SÍ" --> REARM_AC["Re-activar Climatització"] --> CHECK_TERMO
+    FC_REARM -- "NO" --> CHECK_TERMO
+
+    %% TERMO SURPLUS
+    CHECK_TERMO{"♨️ Estat del Termo Elèctric"} --> TERMO_ON_CHECK{"Termo està Encès?"}
+
+    TERMO_ON_CHECK -- "SÍ" --> TERMO_P_CHECK{"Potència < 50W per > 2 min?"}
+    TERMO_P_CHECK -- "SÍ (60ºC Assolits)" --> TERMO_FINISH["✅ Termo OFF (Feina Feta) <br> termo_heated_today = True"]
+    TERMO_P_CHECK -- "NO" --> TERMO_SOC_PAUSE{"SoC < 65%?"}
+    TERMO_SOC_PAUSE -- "SÍ" --> TERMO_PAUSE["⏸️ Pausa de Seguretat per Núvols (Termo OFF)"]
+    TERMO_SOC_PAUSE -- "NO" --> SET_GRID_800["🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
+
+    TERMO_ON_CHECK -- "NO" --> TERMO_START_CHECK{"termo_heated_today = False & <br> SoC >= 83% & Sol >= 500W?"}
+    TERMO_START_CHECK -- "SÍ" --> TERMO_START["♨️ Engegar Termo per LocalTuya <br> 🔌 Grid Setpoint = 800W <br> ❄️ AC = 27.0ºC (Peak Shaving)"]
+    TERMO_START_CHECK -- "NO" --> AC_CLIMATE_LADDER
+
+    %% ESCALA CLIMA AC
+    AC_CLIMATE_LADDER{"❄️ Escala de Climatització Diürna"}
+    TERMO_FINISH --> AC_CLIMATE_LADDER
+    TERMO_PAUSE --> AC_CLIMATE_LADDER
+    SET_GRID_800 --> CHECK_CRATE
+
+    AC_CLIMATE_LADDER --> POST_TERMO_CHECK{"termo_heated_today = True?"}
+    POST_TERMO_CHECK -- "SÍ (Termo Completat)" --> GRAO_1{"Sol >= 600W & SoC >= 85%?"}
+    GRAO_1 -- "SÍ" --> AC_22["❄️ AC a 22.0ºC (Ventilador Alt - Supercooling)"]
+    GRAO_1 -- "NO" --> GRAO_2{"Sol >= 250W & SoC >= 79%?"}
+    GRAO_2 -- "SÍ" --> AC_24["🌤️ AC a 24.0ºC (Ventilador Auto)"]
+    GRAO_2 -- "NO" --> AC_26["🏰 AC a 26.0ºC (Confort Base)"]
+
+    POST_TERMO_CHECK -- "NO (Matí Pre-Termo)" --> AC_PRE_26["🏰 AC a 26.0ºC (Confort Base Pre-Termo)"]
+
+    %% PROTECCIÓ C-RATE & GRID SETPOINT
+    AC_22 --> CHECK_CRATE
+    AC_24 --> CHECK_CRATE
+    AC_26 --> CHECK_CRATE
+    AC_PRE_26 --> CHECK_CRATE
+
+    CHECK_CRATE{"⚡ Protecció C-Rate Bateria"}
+    CHECK_CRATE -- "Descàrrega >= 70A (>15s)" --> CRATE_1C["🚨 Tall 1C d'Urgència: AC i Termo a OFF"]
+    CHECK_CRATE -- "Descàrrega >= 34A (>3 min)" --> CRATE_05C["⚠️ Tall 0.5C per Estrès Tèrmic: AC i Termo a OFF"]
+    CHECK_CRATE -- "Normal" --> DYN_GRID
+
+    DYN_GRID{"🔌 Grid Setpoint Dinàmic (Termo en Repòs)"}
+    DYN_GRID -- "SoC >= 88%" --> GRID_50["🌿 Grid Setpoint = 50 W"]
+    DYN_GRID -- "SoC < 85%" --> GRID_150["⚡ Grid Setpoint = 150 W"]
+
+    GRID_50 --> MEMORY_SAVE
+    GRID_150 --> MEMORY_SAVE
+    CRATE_1C --> MEMORY_SAVE
+    CRATE_05C --> MEMORY_SAVE
+
+    MEMORY_SAVE{"💾 Checkpoint de Dades a eMMC"}
+    MEMORY_SAVE -- "Cada 30 minuts o a mitjanit" --> WRITE_FLASH["💾 Guardar caseta_daily_stats.json (300 bytes)"]
+    MEMORY_SAVE -- "En curs normal" --> END_LOOP(["🏁 Fi de Cicle (Sleep 1s)"])
+    WRITE_FLASH --> END_LOOP
+```
+
+---
+
+## 🏛️ Les Lleis Fonamentals de Prioritat & Gestió de Càrregues
 
 ```
   ┌────────────────────────────────────────────────────────────────────────┐
-  │ 1. 🛡️ SALUT DE LA BATERIA & ESCUT DEFENSIU DE 2 NIVELLS (Prioritat 0)  │
+  │ 0. 🍃 BIOCLIMÀTICA & FREE-COOLING SILENCIÓS (Prioritat Màxima Nit)      │
+  │    • Si Text < 25.0 ºC durant >20 minuts ininterromputs i Tint < 28.0 ºC│
+  │      -> Apaga l'AC automàticament sense enviar cap notificació.        │
+  │    • Re-activa si Tint >= 28.8 ºC (faça la calor que faça a fora) o si │
+  │      Text >= 27.0 ºC amb el sol del matí.                              │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │ 1. 🛡️ SALUT DE LA BATERIA & ESCUT DEFENSIU DE 2 NIVELLS (Prioritat 1)  │
   │    • Top-Balancing nocturn al 100% aprofitant tarifa supervall.        │
-  │    • Reconnexió immediata a xarxa si la descàrrega supera 15 A         │
-  │      (>750 W) durant >5 s o si el SoC baixa del 80% en mode aïllat.    │
   │    • ⚡ Protecció 1C (>=70A / ~3.5 kW per >15s): Tall d'urgència AC+Termo.│
-  │    • ⚡ Protecció 0.5C (>=34A / ~1.7 kW per >3 min): Tall per estrès tèrmic.│
+  │    • ⚡ Protecció 0.5C (>=34A / ~1.7 kW per >3 min): Tall estrès tèrmic.│
   │    • ❄️ ESGGLO 1 (SoC < 50%): Apagada preventiva de l'AC per Tuya IR. │
-  │    • 🚨 ESGGLO 2 (SoC < 45%): Desconnexió total d'AC + Termo elèctric  │
-  │      (endoll Tuya LAN/Cloud). Garanteix 1,12 kWh fins al tall del 10%  │
-  │      del BMS (14 hores de SAI ininterromput per a nevera i router).    │
+  │    • 🚨 ESGGLO 2 (SoC < 35%): Desconnexió incondicional del Termo en   │
+  │      <20 ms per socket LocalTuya LAN. Blinda >10h de SAI per a la nit. │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 2. ♨️ GESTIÓ DINÀMICA DE CÀRREGUES & PEAK SHAVING (Prioritat 1)        │
-  │    • Coordinació intel·ligent Termo (100L / 1200W) & Aire Condicionat:  │
-  │    • Quan el termo està calfant (>=500W), l'AC es modula a 27.0 ºC     │
-  │      alliberant ~700W elèctrics.                                       │
-  │    • Respecte escrupulós del límit dels 5A contractats (1.15 kW) i     │
-  │      protecció contra caigudes de tensió a la línia rural (<210V).     │
+  │ 2. ♨️ EXCEDENTS SOLARS PER AL TERMO & PEAK SHAVING (Prioritat 2)       │
+  │    • Encesa automàtica quan SoC >= 83.0% i Sol Huawei >= 500 W.         │
+  │    • Modulació de l'AC a 27.0 ºC (Peak Shaving) per alliberar 600W.    │
+  │    • 🔌 Suport Dinàmic de Xarxa a 800 W per evitar descàrrega de bater.│
+  │    • Apagat per feina feta (60.0 ºC): Consum <50W durant 2 minuts ->   │
+  │      Termo OFF per a tot el dia (termo_heated_today = True).           │
+  │    • Pausa de seguretat si entren núvols i SoC < 65%.                  │
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 3. 🔌 RESILIÈNCIA I SAI METEOROLÒGIC (Prioritat 2)                     │
-  │    • Consulta meteorològica Open-Meteo cada 60 minuts.                 │
-  │    • Si detecta onada de calor extrema (Tmax >= 38ºC o T21h >= 31ºC)   │
-  │      o tensió baixa de xarxa (<190V), blinda el sòl al 95% – 100%.     │
+  │ 3. ❄️ ESCALA SOLAR DIÜRNA DE CLIMATITZACIÓ (Prioritat 3)               │
+  │    • ☕ Matí Pre-Termo (Fins a acabar l'aigua): AC a 26.0 ºC (Auto).    │
+  │    • ☀️ Graó 1 Post-Termo (Sol >= 600W & SoC >= 85%): AC a 22.0 ºC (Alt).│
+  │    • 🌤️ Graó 2 Post-Termo (Sol >= 250W & SoC >= 79%): AC a 24.0 ºC (Auto)│
+  │    • 🏰 Graó 3 Retorn Confort (SoC < 79% o normal): AC a 26.0 ºC (Auto)│
+  │    • 🌙 Horari Nocturn (23h a 08h): Descans a 26.5 ºC (Ventilador Auto).│
   ├────────────────────────────────────────────────────────────────────────┤
-  │ 3. 🏝️ ZERO REGAL (Prioritat 2)                                         │
-  │    • Commuta a Inverter Only (Mode 2) només si: SoC > 88%, injecció    │
-  │      > 50 W durant més de 30 segons, i bateria en repòs (<2 A).        │
-  │    • El MultiPlus està configurat per pujar automàticament la          │
-  │      freqüència de CA (50.2 - 51.5 Hz) i frenar l'inversor solar.      │
-  ├────────────────────────────────────────────────────────────────────────┤
-  │ 4. ☀️ MÀXIM APROFITAMENT SOLAR (Prioritat 3)                            │
-  │    • Cicle Circadiari de 4 Fites per Rellotge:                         │
-  │      - 00:00h a 06:59h: Sòl al 100% (Supervall 7 cts & Top-Balancing). │
-  │      - 07:00h a 09:29h: Sòl al 85% (Transició matí per al desdejuni).   │
-  │      - 09:30h a 16:29h: Sòl al 75% (880 Wh de vas buit per al sol).    │
-  │      - 16:30h a 23:59h: Sòl al 85% (Reserva de seguretat per a la nit).│
-  │      - Caps de Setmana i Festius (18h+): Sòl al 100% (Tarifa vall 24h). │
+  │ 4. 🔌 GRID SETPOINT DINÀMIC VICTRON ESS (Prioritat 4)                  │
+  │    • Termo Actiu (>=500W): 800 W (Suport de xarxa per protegir bater). │
+  │    • Termo en Repòs & SoC < 88%: 150 W (Amortidor de consums basals).  │
+  │    • Termo en Repòs & SoC >= 88%: 50 W (Estalvi màxim de xarxa).       │
   └────────────────────────────────────────────────────────────────────────┘
 ```
 
