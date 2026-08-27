@@ -185,6 +185,10 @@ class CasetaGuardian:
         self.c1_discharge_start_time = None
         self.c05_discharge_start_time = None
         
+        # Grid Setpoint Dinàmic (Victron ESS)
+        self.last_grid_setpoint = None
+        self.last_grid_setpoint_eval_time = 0.0
+        
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
         self.load_daily_stats()
@@ -823,6 +827,38 @@ class CasetaGuardian:
             log.info(f"⚙️ Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% [{phase_name}]")
             self.last_applied_min_soc = target
 
+    def sync_grid_setpoint(self):
+        """Modula dinàmicament el Grid Setpoint de Victron ESS segons l'estat de càrrega (SoC) de la bateria:
+        - SoC < 88%: 150.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
+        - SoC >= 88%: 50.0 W (Reducció d'importació quan la bateria està plena)
+        """
+        now = time.time()
+        if now - self.last_grid_setpoint_eval_time < 30:
+            return
+        self.last_grid_setpoint_eval_time = now
+
+        # Histeresi: 50W si SoC >= 88%, 150W si SoC < 85%, mantenir si està entre 85% i 88%
+        if self.soc >= 88.0:
+            target = 50.0
+            reason = f"🔋 Bateria Plena ({self.soc:.1f}% >= 88%) -> Setpoint reduït a 50W"
+        elif self.soc < 85.0:
+            target = 150.0
+            reason = f"⚡ Bateria en càrrega ({self.soc:.1f}% < 85%) -> Setpoint a 150W (Amortidor)"
+        else:
+            target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 150.0
+            reason = "Estable"
+
+        if self.last_grid_setpoint != target:
+            try:
+                import dbus
+                bus = dbus.SystemBus()
+                obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
+                obj.SetValue(dbus.Double(target), dbus_interface="com.victronenergy.BusItem")
+                log.info(f"⚙️ Sincronitzat Grid Setpoint a Cerbo GX: {target:.0f} W [{reason}]")
+                self.last_grid_setpoint = target
+            except Exception as e:
+                log.warning(f"No s'ha pogut actualitzar Grid Setpoint per D-Bus: {e}")
+
     def set_multiplus_mode(self, target_mode: int, reason: str):
         now = time.time()
         if now - self.last_mode_switch_time < 20:
@@ -1242,6 +1278,7 @@ class CasetaGuardian:
                     self.last_keepalive_time = now
                     
                 self.sync_cerbo_min_soc(now_madrid)
+                self.sync_grid_setpoint()
                 self.update_energy_forecast()
                 self.update_inforatge()
                 self.update_termo_status()
