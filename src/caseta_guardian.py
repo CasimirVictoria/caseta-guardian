@@ -189,6 +189,9 @@ class CasetaGuardian:
         self.last_grid_setpoint = None
         self.last_grid_setpoint_eval_time = 0.0
         
+        # Checkpoint de seguretat diari a disc (cada 30 minuts)
+        self.last_checkpoint_save_time = time.time()
+        
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
         self.load_daily_stats()
@@ -1011,6 +1014,11 @@ class CasetaGuardian:
                     self.client.publish("caseta/stats", json.dumps({"value": stats}), retain=True)
             except Exception:
                 pass
+
+        # 💾 Checkpoint de seguretat a disc Flash (eMMC) cada 30 minuts (1800s)
+        if now - self.last_checkpoint_save_time >= 1800.0:
+            self.last_checkpoint_save_time = now
+            self.save_daily_stats()
 
     def evaluate_termo_surplus(self, now_madrid):
         """Avalua l'encesa autònoma del Termo Elèctric per excedents solars diürns (11:30h - 15:30h)."""
