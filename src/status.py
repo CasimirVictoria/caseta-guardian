@@ -424,8 +424,21 @@ def main():
         if mqtt_termo and isinstance(mqtt_termo, dict):
             is_on = mqtt_termo.get("is_on", False)
             p_w = mqtt_termo.get("power_w", 0.0)
-            if is_on:
-                termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Encès{RESET}]"
+            kwh = mqtt_termo.get("kwh_today", 0.0)
+            t_start = mqtt_termo.get("start_time", "")
+            t_end = mqtt_termo.get("end_time", "")
+            act_mins = mqtt_termo.get("active_mins", 0)
+            is_heating = mqtt_termo.get("is_heating", False) or (p_w >= 100.0)
+
+            if is_heating:
+                time_str = f"des de les {t_start}h" if t_start else "ara"
+                termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Calfant {time_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
+            elif t_start:
+                duration_str = f" ({act_mins} min)" if act_mins > 0 else ""
+                end_str = f"{t_end}h" if t_end else "completat"
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{GREEN}Calfat {t_start}h - {end_str}{duration_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
+            elif is_on:
+                termo_str = f"{CYAN}♨️ Preparat (0 W){RESET} [{CYAN}Endoll Encès{RESET}]"
             else:
                 termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}]"
             print(box_line(f"   • {BOLD}Termo Elèctric:{RESET}        {termo_str}"))

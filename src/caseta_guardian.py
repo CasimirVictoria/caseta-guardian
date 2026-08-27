@@ -180,6 +180,12 @@ class CasetaGuardian:
         self.termo_status = {}
         self.termo_heated_today = False
         self.termo_low_power_start_time = None
+        self.termo_kwh_today = 0.0
+        self.termo_start_time_str = ""
+        self.termo_end_time_str = ""
+        self.termo_active_seconds_today = 0.0
+        self.termo_currently_heating = False
+        self.last_termo_calc_time = time.time()
         
         # Protecció de Corrent i C-rate de Bateria
         self.c1_discharge_start_time = None
@@ -241,7 +247,11 @@ class CasetaGuardian:
                     self.p2_kwh_today = float(data.get("p2_kwh_today", 0.0))
                     self.p3_kwh_today = float(data.get("p3_kwh_today", 0.0))
                     self.termo_heated_today = bool(data.get("termo_heated_today", False))
-                    log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum (Termo calfat: {self.termo_heated_today}).")
+                    self.termo_kwh_today = float(data.get("termo_kwh_today", 0.0))
+                    self.termo_start_time_str = str(data.get("termo_start_time_str", ""))
+                    self.termo_end_time_str = str(data.get("termo_end_time_str", ""))
+                    self.termo_active_seconds_today = float(data.get("termo_active_seconds_today", 0.0))
+                    log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum (Termo: {self.termo_kwh_today:.2f} kWh, calfat: {self.termo_heated_today}).")
             except Exception as e:
                 log.warning(f"No s'han pogut carregar acumulats previs: {e}")
 
@@ -474,12 +484,34 @@ class CasetaGuardian:
                 power_w = float(dps.get("19", 0)) / 10.0
                 voltage_v = float(dps.get("20", 0)) / 10.0
 
+                # Càlcul d'energia i temps d'escalfament
+                dt_termo = now - getattr(self, "last_termo_calc_time", now)
+                self.last_termo_calc_time = now
+                now_madrid = get_madrid_now()
+
+                if power_w >= 100.0:
+                    if not getattr(self, "termo_currently_heating", False):
+                        self.termo_currently_heating = True
+                        if not self.termo_start_time_str:
+                            self.termo_start_time_str = now_madrid.strftime("%H:%M")
+                    self.termo_kwh_today += (power_w / 1000.0) * (dt_termo / 3600.0)
+                    self.termo_active_seconds_today += dt_termo
+                else:
+                    if getattr(self, "termo_currently_heating", False):
+                        self.termo_currently_heating = False
+                        self.termo_end_time_str = now_madrid.strftime("%H:%M")
+
                 termo_data = {
                     "is_on": is_on,
                     "power_w": round(power_w, 1),
                     "voltage_v": round(voltage_v, 1),
                     "current_a": round(current_a, 2),
                     "source": "localtuya",
+                    "kwh_today": round(self.termo_kwh_today, 2),
+                    "start_time": self.termo_start_time_str,
+                    "end_time": self.termo_end_time_str,
+                    "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
+                    "is_heating": self.termo_currently_heating,
                     "timestamp": now
                 }
                 self.termo_status = termo_data
@@ -526,12 +558,33 @@ class CasetaGuardian:
                 voltage_v = status_map.get("cur_voltage", 0) / 10.0
                 current_a = status_map.get("cur_current", 0) / 1000.0
 
+                dt_termo = now - getattr(self, "last_termo_calc_time", now)
+                self.last_termo_calc_time = now
+                now_madrid = get_madrid_now()
+
+                if power_w >= 100.0:
+                    if not getattr(self, "termo_currently_heating", False):
+                        self.termo_currently_heating = True
+                        if not self.termo_start_time_str:
+                            self.termo_start_time_str = now_madrid.strftime("%H:%M")
+                    self.termo_kwh_today += (power_w / 1000.0) * (dt_termo / 3600.0)
+                    self.termo_active_seconds_today += dt_termo
+                else:
+                    if getattr(self, "termo_currently_heating", False):
+                        self.termo_currently_heating = False
+                        self.termo_end_time_str = now_madrid.strftime("%H:%M")
+
                 termo_data = {
                     "is_on": is_on,
                     "power_w": round(power_w, 1),
                     "voltage_v": round(voltage_v, 1),
                     "current_a": round(current_a, 2),
                     "source": "tuya_cloud",
+                    "kwh_today": round(self.termo_kwh_today, 2),
+                    "start_time": self.termo_start_time_str,
+                    "end_time": self.termo_end_time_str,
+                    "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
+                    "is_heating": self.termo_currently_heating,
                     "timestamp": now
                 }
                 self.termo_status = termo_data
@@ -948,6 +1001,10 @@ class CasetaGuardian:
             "max_cell_delta_today": round(self.max_cell_delta_today, 1),
             "soh_bms": round(self.soh, 0),
             "termo_heated_today": getattr(self, "termo_heated_today", False),
+            "termo_kwh_today": round(getattr(self, "termo_kwh_today", 0.0), 2),
+            "termo_start_time_str": getattr(self, "termo_start_time_str", ""),
+            "termo_end_time_str": getattr(self, "termo_end_time_str", ""),
+            "termo_active_seconds_today": round(getattr(self, "termo_active_seconds_today", 0.0), 0),
             "timestamp": time.time()
         }
         try:
@@ -988,6 +1045,12 @@ class CasetaGuardian:
             self.relay_switch_count = 0
             self.max_cell_delta_today = 0.0
             self.tuya_ac_turned_off_today = False
+            self.termo_heated_today = False
+            self.termo_kwh_today = 0.0
+            self.termo_start_time_str = ""
+            self.termo_end_time_str = ""
+            self.termo_active_seconds_today = 0.0
+            self.termo_currently_heating = False
             log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str} (Festiu/CapSetmana: {self.is_holiday})")
 
         hours = dt / 3600.0
