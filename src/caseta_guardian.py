@@ -831,17 +831,24 @@ class CasetaGuardian:
             self.last_applied_min_soc = target
 
     def sync_grid_setpoint(self):
-        """Modula dinàmicament el Grid Setpoint de Victron ESS segons l'estat de càrrega (SoC) de la bateria:
-        - SoC < 88%: 150.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
-        - SoC >= 88%: 50.0 W (Reducció d'importació quan la bateria està plena)
+        """Modula dinàmicament el Grid Setpoint de Victron ESS:
+        - Termo Actiu (>=500W): 800.0 W (Suport de xarxa per protegir la bateria del cicle de 1.250W)
+        - Termo en Repòs & SoC < 88%: 150.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
+        - Termo en Repòs & SoC >= 88%: 50.0 W (Reducció d'importació quan la bateria està plena)
         """
         now = time.time()
         if now - self.last_grid_setpoint_eval_time < 30:
             return
         self.last_grid_setpoint_eval_time = now
 
-        # Histeresi: 50W si SoC >= 88%, 150W si SoC < 85%, mantenir si està entre 85% i 88%
-        if self.soc >= 88.0:
+        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
+        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
+
+        # ♨️ 1. Prioritat Suport Termo Elèctric (800 W de xarxa per evitar descàrrega de bateria)
+        if termo_on and termo_p >= 500.0:
+            target = 800.0
+            reason = f"♨️ Suport Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W per protegir bateria"
+        elif self.soc >= 88.0:
             target = 50.0
             reason = f"🔋 Bateria Plena ({self.soc:.1f}% >= 88%) -> Setpoint reduït a 50W"
         elif self.soc < 85.0:
