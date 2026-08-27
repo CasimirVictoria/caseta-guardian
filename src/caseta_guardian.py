@@ -674,10 +674,14 @@ class CasetaGuardian:
                 self.ac_turned_off_by_guardian = True
             return
 
-        # Si l'AC estava apagat pel Guardià i la bateria ja ha superat el 50%, restablim automàticament
-        if self.soc >= 50.0 and self.ac_turned_off_by_guardian and self.ac_current_power == 0:
-            log.info(f"🔄 Bateria recuperada ({self.soc:.1f}% >= 50%). Restablint AC automàticament...")
-            self.send_notification("❄️ Restabliment Climatització", f"Bateria recuperada ({self.soc:.1f}% >= 50%)! S'ha reprès l'AC automàticament.", "default", "snowflake")
+        # 🛡️ Histèresi Anti-Cicle: Si l'AC està apagat, NOMÉS s'encén automàticament si SoC >= 65.0% (banda del 15%)
+        if self.ac_current_power == 0 and self.soc < 65.0:
+            return
+
+        # Si l'AC estava apagat pel Guardià i la bateria ja ha superat el 65%, restablim automàticament
+        if self.soc >= 65.0 and self.ac_turned_off_by_guardian and self.ac_current_power == 0:
+            log.info(f"🔄 Bateria recuperada ({self.soc:.1f}% >= 65%). Restablint AC automàticament...")
+            self.send_notification("❄️ Restabliment Climatització", f"Bateria recuperada ({self.soc:.1f}% >= 65%)! S'ha reprès l'AC automàticament.", "default", "snowflake")
             self.ac_turned_off_by_guardian = False
 
         # Lectures de temperatura interior (Zigbee) i exterior (Inforatge)
