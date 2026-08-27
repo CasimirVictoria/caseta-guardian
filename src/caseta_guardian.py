@@ -1165,7 +1165,12 @@ class CasetaGuardian:
                 self.cell_min = float(val) if val is not None else self.cell_min
                 
             elif topic.endswith("/pvinverter/31/Ac/Power") or topic.endswith("/pvinverter/31/Ac/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/Power"):
-                self.pv_p = float(val) if val is not None else self.pv_p
+                raw_pv = float(val) if val is not None else self.pv_p
+                # Filtre de soroll d'inversor Huawei en repòs: entre -25W i +20W és 0W real
+                if -25.0 <= raw_pv <= 20.0:
+                    self.pv_p = 0.0
+                else:
+                    self.pv_p = raw_pv
             elif topic.endswith("/system/0/Ac/Consumption/L1/Power") or topic.endswith("/system/0/Ac/ConsumptionOnOutput/L1/Power") or topic.endswith("/vebus/276/Ac/Out/L1/P") or topic.endswith("/vebus/276/Ac/Out/P"):
                 self.ac_loads = float(val) if val is not None else self.ac_loads
             elif topic.endswith("/system/0/Ac/Grid/L1/Power") or topic.endswith("/system/0/Ac/ActiveIn/L1/Power") or topic.endswith("/vebus/276/Ac/ActiveIn/L1/P") or topic.endswith("/vebus/276/Ac/ActiveIn/P"):
