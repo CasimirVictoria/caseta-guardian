@@ -787,13 +787,13 @@ class CasetaGuardian:
             target = 95.0
             phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
 
-        # 2. 🌙 Nit Supervall (00:00h a 06:59h Madrid): Top-Balancing i 100% de SAI a 7 cts/kWh
-        elif time_decimal < 7.0:
+        # 2. 🌙 Nit i Matinada Vall P3 (00:00h a 07:59h Madrid): 100% Minimum SOC & Càrrega Plena a 0.08 €/kWh
+        elif time_decimal < 8.0:
             target = 100.0
-            phase_name = "🌙 Nit Supervall (100% Top-Balancing & SAI Màxim a 7 cts)"
+            phase_name = "🌙 Nit i Matinada Vall P3 (100% Minimum SOC & Zero Descàrrega a 0.08 €/kWh)"
 
-        # 3. ☕ Matí Primer Cafè / Transició (07:00h a 09:29h Madrid)
-        elif 7.0 <= time_decimal < 9.5:
+        # 3. ☕ Matí Transició Diürna (08:00h a 09:29h Madrid)
+        elif 8.0 <= time_decimal < 9.5:
             target = 85.0
             phase_name = "☕ Matí Transició (85% Coixí Inicial)"
 
@@ -1120,25 +1120,15 @@ class CasetaGuardian:
         elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
             today_est = getattr(self, "today_kwh_est", 5.0)
 
-            # 🌙 CAS A: Arbitratge Matinada Vall P3 (06:00h - 07:00h) si el dia serà fosc/plujós (<3.5 kWh)
-            if 6.0 <= time_decimal < 7.0 and today_est < 3.5:
-                try:
-                    import dbus
-                    bus = dbus.SystemBus()
-                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
-                    obj.SetValue(dbus.Double(1300.0), dbus_interface="com.victronenergy.BusItem")
-                    self.last_grid_setpoint = 1300.0
-                    log.info("🔌 [MATINADA P3] Grid Setpoint a 1300W abans d'engegar el Termo a preu Vall (0.08 €/kWh)...")
-                except Exception as e:
-                    log.warning(f"Error establint pre-rampa P3 a D-Bus: {e}")
-
+            # 🌙 CAS A: Arbitratge Matinada Vall P3 (05:15h - 07:45h) si el dia serà fosc/plujós (<3.5 kWh)
+            if 5.25 <= time_decimal < 7.75 and today_est < 3.5:
                 self.send_termo_tuya_command(
                     power=True,
-                    reason=f"🌙 Arbitratge Vall P3: Previsió solar fosca ({today_est:.1f} kWh < 3.5 kWh) -> Calfant aigua en horari super-econòmic (0.08 €/kWh)"
+                    reason=f"🌙 Arbitratge Vall P3 (05:15h): Previsió fosca ({today_est:.1f} kWh < 3.5 kWh) -> Calfant 100% de Xarxa P3 (0.08 €/kWh) amb Bateria al 100%"
                 )
                 self.send_notification(
                     "🌙 Termo Engegat en Franja Vall P3",
-                    f"Dia ennuvolat previst ({today_est:.1f} kWh). Calfant aigua a preu super-econòmic (0.08 €/kWh) abans de les 08:00h!",
+                    f"Dia ennuvolat previst ({today_est:.1f} kWh). Calfant aigua a 60ºC en horari super-econòmic (0.08 €/kWh) amb bateria al 100%!",
                     "default",
                     "moon"
                 )
