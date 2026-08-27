@@ -713,17 +713,17 @@ class CasetaGuardian:
             return
 
         # ♨️ LLEI 2.0: Peak Shaving & Prioritat Termo Elèctric
-        # Si el termo està calfant aigua (>=500W), pugem l'AC a 27ºC per alliberar ~700W elèctrics i evitar pics de potència/caigudes de tensió
+        # Si el termo està calfant aigua (>=500W), fixem l'AC a 27ºC per alliberar ~600W elèctrics i evitar sobrecàrregues
         termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
         termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
         if termo_on and termo_p >= 500.0:
-            if self.ac_current_power != 1 or self.ac_current_temp < 27:
+            if self.ac_current_power != 1 or self.ac_current_temp != 27:
                 self.send_ac_tuya_command(
                     power=1,
                     temp=27,
                     mode=0,
                     fan=0,
-                    reason=f"♨️ Peak Shaving: Termo actiu ({termo_p:.0f}W) -> AC modulat a 27ºC"
+                    reason=f"♨️ Peak Shaving: Termo actiu ({termo_p:.0f}W) -> AC a 27ºC"
                 )
             return
 
@@ -735,23 +735,23 @@ class CasetaGuardian:
                 self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🌙 Horari Nocturn: Descans a 26.5ºC (Ventilador Auto)")
             return
 
-        # ☀️ LLEI 3: Escala Solar Dinàmica Diürna (08:00 - 22:59h)
-        # Graó 1: Super-Excedent Migdia (Sol >= 600W & SoC >= 85% & abans de les 16:00h) -> 22ºC + Ventilador Alt (3)
-        if self.pv_p >= 600.0 and self.soc >= 85.0 and hour < 16:
+        # ☀️ LLEI 3: Escala Solar Dinàmica Diürna
+        # Graó 1: Super-Excedent Solar (Sol >= 600W & SoC >= 85% & Termo en repòs) -> 22ºC + Ventilador Alt (3)
+        if self.pv_p >= 600.0 and self.soc >= 85.0 and (not termo_on or termo_p < 500.0):
             if self.ac_current_power != 1 or self.ac_current_temp != 22:
-                self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Graó 1: Super-Excedent Migdia ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 22ºC (Ventilador Alt)")
+                self.send_ac_tuya_command(power=1, temp=22, mode=0, fan=3, reason=f"☀️ Graó 1: Super-Excedent Solar ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 22ºC (Ventilador Alt)")
             return
 
-        # Graó 2: Transició Tarda / Excedent Moderat (Sol >= 250W & SoC >= 75% o tarda >=16h amb bateria plena) -> 24ºC + Ventilador Auto (0)
-        if (self.pv_p >= 250.0 and self.soc >= 75.0) or (hour >= 16 and self.soc >= 80.0 and self.pv_p >= 150.0):
+        # Graó 2: Transició Tarda / Excedent Moderat (Sol >= 250W & SoC >= 79%) -> 24ºC + Ventilador Auto (0)
+        if self.pv_p >= 250.0 and self.soc >= 79.0:
             if self.ac_current_power != 1 or self.ac_current_temp != 24:
-                self.send_ac_tuya_command(power=1, temp=24, mode=0, fan=0, reason=f"🌤️ Graó 2: Transició Tarda/Moderat ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 24ºC (Ventilador Auto)")
+                self.send_ac_tuya_command(power=1, temp=24, mode=0, fan=0, reason=f"🌤️ Graó 2: Excedent Moderat ({self.pv_p:.0f}W) i SoC {self.soc:.1f}% -> 24ºC (Ventilador Auto)")
             return
 
-        # Graó 3: Confort Base Permanent Diürn (SoC >= 69%) -> 26ºC + Ventilador Auto (0)
+        # Graó 3: Confort Base Permanent Diürn (SoC >= 69% o caiguda de bateria <79%) -> 26ºC + Ventilador Auto (0)
         if self.soc >= 69.0:
             if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🏰 Graó 3: Confort Base Estable a 26ºC (Ventilador Auto)")
+                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason=f"🏰 Graó 3: Confort Base Estable a 26ºC (SoC {self.soc:.1f}%)")
         else:
             # Bateria Baixa (<69%) I repòs >30 min -> Mode Eco 28ºC per protegir el coixí
             time_since_presence = now - self.last_presence_seen_time
@@ -1030,20 +1030,18 @@ class CasetaGuardian:
 
         # Si el termo està apagat i encara no ha completat la càrrega d'avui:
         elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
-            # Finestra de màxim sol: 11:30h a 15:30h
-            if 11.5 <= time_decimal <= 15.5:
-                # Condició d'Excedent: SoC >= 85.0% i Sol Huawei >= 500W
-                if self.soc >= 85.0 and self.pv_p >= 500.0:
-                    self.send_termo_tuya_command(
-                        power=True,
-                        reason=f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 85% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo"
-                    )
-                    self.send_notification(
-                        "♨️ Termo Engegat per Excedents Solars",
-                        f"Bateria al {self.soc:.1f}% i Sol a {self.pv_p:.0f}W. Escalfant aigua de franc!",
-                        "default",
-                        "sun"
-                    )
+            # Condició d'Excedent: SoC >= 83.0% i Sol Huawei >= 500W (abans de pujar de 85% per donar prioritat a l'aigua)
+            if self.soc >= 83.0 and self.pv_p >= 500.0:
+                self.send_termo_tuya_command(
+                    power=True,
+                    reason=f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 83% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo"
+                )
+                self.send_notification(
+                    "♨️ Termo Engegat per Excedents Solars",
+                    f"Bateria al {self.soc:.1f}% i Sol a {self.pv_p:.0f}W. Escalfant aigua de franc!",
+                    "default",
+                    "sun"
+                )
 
     def evaluate_state_machine(self, now_madrid=None):
         now = time.time()
