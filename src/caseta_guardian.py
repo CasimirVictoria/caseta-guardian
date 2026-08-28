@@ -1297,9 +1297,21 @@ class CasetaGuardian:
         current_minute = now_madrid.minute
         time_decimal = current_hour + (current_minute / 60.0)
 
-        # Estat actual del termo segons l'endoll Tuya
-        is_on = self.termo_status.get("is_on", False)
-        termo_p = self.termo_status.get("power_w", 0.0)
+        # 🚨 ESCUT D'EMERGÈNCIA: Apagada de Xarxa Exterior / Xarxa Caiguda (<185V o desconnectada)
+        grid_present = (getattr(self, "grid_v", 0.0) >= 185.0) and (getattr(self, "grid_status", "") != "Sense Xarxa (Apagada)")
+        if not grid_present:
+            if is_on:
+                self.send_termo_tuya_command(
+                    power=False,
+                    reason="🚨 ESCUT APAGADA: Xarxa elèctrica caiguda (<185V) -> Termo tallat immediatament per preservar la bateria!"
+                )
+                self.send_notification(
+                    "🚨 Escut Apagada: Termo Tallat",
+                    "S'ha detectat tall de xarxa elèctrica. Termo apagat a l'instant per protegir la Pylontech.",
+                    "high",
+                    "warning"
+                )
+            return
 
         # Si el termo està encès, avaluem quan cal apagar-lo:
         if is_on:
@@ -1319,12 +1331,14 @@ class CasetaGuardian:
                         "bath"
                     )
                     self.termo_heated_today = True
+                    self.termo_est_temp = 60.0
+                    self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
                     self.termo_low_power_start_time = None
                     return
             else:
                 self.termo_low_power_start_time = None
 
-            # 2. Pausa per Núvol / Bateria Caiguda (<65% durant el dia)
+            # 2. Pausa per Bateria Caiguda (<65%)
             if self.soc < 65.0:
                 self.send_termo_tuya_command(
                     power=False,
@@ -1332,7 +1346,15 @@ class CasetaGuardian:
                 )
                 return
 
-            # 3. Fi de la Finestra d'Excedents (passades les 16:00h)
+            # 3. Fi de la Finestra Matinal P3 (passades les 06:30h sense tall)
+            if 6.5 <= time_decimal < 8.0 and not (9.0 <= time_decimal < 16.0):
+                self.send_termo_tuya_command(
+                    power=False,
+                    reason="🕒 Fi Finestra Matinada P3 (06:30h): Apagat preventiu per recarregar bateria abans de les 08h"
+                )
+                return
+
+            # 4. Fi de la Finestra d'Excedents Solars (passades les 16:00h)
             if time_decimal >= 16.0:
                 self.send_termo_tuya_command(
                     power=False,
@@ -1344,15 +1366,26 @@ class CasetaGuardian:
         elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
             today_est = getattr(self, "today_kwh_est", 5.0)
 
-            # 🌙 CAS A: Arbitratge Matinada Vall P3 (05:15h - 07:45h) si el dia serà fosc/plujós (<3.5 kWh)
-            if 5.25 <= time_decimal < 7.75 and today_est < 3.5:
+            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:30h a 06:00h) amb xarxa sana i bateria alta (>=85%)
+            if 4.5 <= time_decimal < 6.0 and grid_present and self.soc >= 85.0:
+                # Pre-rampa D-Bus a 800W per evitar descàrrega brusca de bateria
+                try:
+                    import dbus
+                    bus = dbus.SystemBus()
+                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
+                    obj.SetValue(dbus.Double(800.0), dbus_interface="com.victronenergy.BusItem")
+                    self.last_grid_setpoint = 800.0
+                    log.info("🔌 [PRE-RAMPA] Grid Setpoint a 800W per a encesa matinal P3...")
+                except Exception as e:
+                    log.debug(f"Error pre-rampa D-Bus: {e}")
+
                 self.send_termo_tuya_command(
                     power=True,
-                    reason=f"🌙 Arbitratge Vall P3 (05:15h): Previsió fosca ({today_est:.1f} kWh < 3.5 kWh) -> Calfant 100% de Xarxa P3 (0.08 €/kWh) amb Bateria al 100%"
+                    reason=f"🌙 Matinada Vall P3 (04:30h): Encesa a 0.08 €/kWh amb Xarxa Activa ({self.grid_v:.0f}V) i Bateria {self.soc:.0f}%"
                 )
                 self.send_notification(
-                    "🌙 Termo Engegat en Franja Vall P3",
-                    f"Dia ennuvolat previst ({today_est:.1f} kWh). Calfant aigua a 60ºC en horari super-econòmic (0.08 €/kWh) amb bateria al 100%!",
+                    "🌙 Termo Engegat a les 04:30h (Vall P3)",
+                    f"Calfant aigua a 60ºC en horari super-econòmic (0.08 €/kWh). Xarxa activa ({self.grid_v:.0f}V) i bateria al {self.soc:.0f}%!",
                     "default",
                     "moon"
                 )
