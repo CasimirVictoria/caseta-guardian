@@ -100,6 +100,7 @@ def get_telemetry():
         client.subscribe("N/+/pvinverter/#")
         client.subscribe("N/+/system/0/#")
         client.subscribe("N/+/vebus/276/#")
+        client.subscribe("N/+/settings/0/Settings/CGwacs/#")
         client.subscribe("caseta/#")
         client.publish(f"R/{PORTAL_ID}/keepalive", "")
 
@@ -140,13 +141,13 @@ def get_telemetry():
 
     client.loop_start()
     start = time.time()
-    while time.time() - start < 1.5:
+    while time.time() - start < 2.5:
         time.sleep(0.02)
         portal = found_portal[0]
         if (
             portal
             and f"N/{portal}/battery/512/Soc" in data
-            and f"N/{portal}/system/0/Ac/Consumption/L1/Power" in data
+            and f"N/{portal}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit" in data
             and mqtt_stats[0] is not None
             and mqtt_forecast[0] is not None
             and mqtt_clima[0] is not None
@@ -313,6 +314,11 @@ def main():
     status_str = "[Carregant]" if pylon_i and pylon_i > 0.5 else ("[Descarregant]" if pylon_i and pylon_i < -0.5 else "[En Repòs]")
     soh_str = f"  (SoH BMS: {soh:.0f}%)" if soh is not None else ""
     print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc:.1f}%{RESET}  {status_str}{soh_str}"))
+    
+    min_soc_ess = data.get(f"N/{portal}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit") or data.get(f"N/{portal}/settings/0/Settings/CGwacs/MinimumSocLimit")
+    if min_soc_ess is not None:
+        print(box_line(f"   • SoC Mínim ESS (Victron): {CYAN}{BOLD}{min_soc_ess:.0f}%{RESET}  [Consigna de descàrrega activa]"))
+        
     print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actuals:.2f} kWh{RESET} actuals | {GREEN}{kwh_utils:.2f} kWh{RESET} útils (tall {SHUTDOWN_SOC_PERCENT:.0f}%)"))
     print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_fins_escut:.2f} kWh{RESET} lliures (abans del sòl del {SAI_TARGET_RESERVE_SOC:.0f}%)"))
     
