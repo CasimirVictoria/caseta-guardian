@@ -313,46 +313,48 @@ Connectant a Cerbo GX (192.168.1.106)...
 🕒 Registre en directe: 27/08/2026 - 17:15:30
 
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
-│    • Estat de Càrrega (SoC):  82.0%  [Carregant]  (SoH BMS: 90%)             │
-│    • Energia Disponible:      2.62 kWh actuals | 2.30 kWh útils (tall 10%)   │
-│    • Marge fins a Escut SAI:  0.54 kWh lliures (abans del sòl del 65%)       │
-│    • Tensió i Corrent:        49.80 V  |  3.2 A (159 W)                      │
-│    • Cel·les (Min / Màx):     3.310 V / 3.324 V (ΔV = 14 mV)                 │
-│    • Temperatura BMS:         28.4 ºC                                        │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                       │
-│    • Producció Solar Huawei:   924.5 W                                       │
-│    • Consum Casa (AC Loads):   715.0 W                                       │
-│    • Freqüència de CA Caseta: 49.98 Hz                                       │
-├──────────────────────────────────────────────────────────────────────────────┤
 │ 🔌 INVERSOR MULTIPLUS-II & XARXA EXTERIOR                                    │
 │    • Mode MultiPlus:          ON (Connectat a Xarxa)                         │
-│    • Tensió Xarxa L1:         226.4 V                                        │
-│    • Estat de la Xarxa:       Important de Xarxa (52 W)                      │
+│    • Tensió Xarxa L1:         222.2 V                                        │
+│    • Estat de la Xarxa:       Important de Xarxa (394 W)                     │
+│    • Consigna Grid Setpoint:  50 W  [⚡ Estalvi Màxim]                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ ♨️🥐 CONSUMS INTEL·LIGENTS TUYA LOCAL (<20ms)                                 │
-│    • Termo Elèctric:          ⚪ En Repòs (0 W) [Calfat 09:51h - 12:45h (112 min) | 2.84 kWh] │
-│    • Cuina (Microones/Torr.): [Encès] (4 W) | 0.03 kWh                       │
-│    • Cuina (Cafetera):        [Encès]                                        │
+│ 🔋 BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh)                        │
+│    • Estat de Càrrega (SoC):  90.0%  [Carregant]  (Mínim ESS: 100%)          │
+│    • Energia Disponible:      2.88 kWh actuals | 2.56 kWh útils (tall 10%)   │
+│    • Marge fins a Escut SAI:  1.28 kWh lliures (abans del sòl del 50%)       │
+│    • Tensió i Corrent:        50.88 V  |  3.6 A (183 W)                      │
+│    • Cel·les (Min / Màx):     3.356 V / 3.538 V (ΔV = 182 mV)                │
+│    • Temperatura BMS:         31.8 ºC                                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ☀️ ENERGIA SOLAR & CONSUM DE LA CASETA                                       │
+│    • Producció Solar Huawei:     0.0 W                                       │
+│    • Consum Casa (AC Loads):   184.5 W                                       │
+│    • Freqüència de CA Caseta: 49.95 Hz                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 📊 BALANÇ I ENERGIA D'AVUI (Acumulats)                                       │
-│    • Producció Solar Generada:  5.84 kWh (Pic màxim: 1285 W)                 │
-│    • Consum Total de la Casa:   4.12 kWh (Cobertura Solar: 88.5%)            │
-│    • Importat de Xarxa:         0.85 kWh | Exportat: 0.00 kWh (Zero Regal)   │
-│    • Cost Total Facturat d'Hui:  0.38 € (Tarifa 2.0TD - Tot inclòs)          │
+│    • Producció Solar Generada:  0.00 kWh                                     │
+│    • Consum Total de la Casa:   4.13 kWh (Cobertura Solar: 0.0%)             │
+│    • Importat de Xarxa:         5.04 kWh | Exportat: 0.00 kWh (Zero Regal)   │
+│    • Cost Total Facturat d'Hui:  0.59 € (Tarifa 2.0TD - Tot inclòs)          │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌤️ PREVISIÓ SOLAR & RISC DE TALL (Open-Meteo API)                            │
-│    • Sol Esperat (Hui / Demà): 6.2 kWh / 6.8 kWh                             │
-│    • Temp. Màx / Ocàs (21h):   32.1 ºC / 28.2 ºC                             │
-│    • Índex de Risc de Tall:    Risc Baix (Normal) (20%)                      │
-│    • Objectiu Reserva Nocturna:  75.0% de Bateria SAI                        │
+│    • Sol Esperat (Hui / Demà): 4.1 kWh / 7.0 kWh                             │
+│    • Temp. Màx / Ocàs (21h):   29.0 ºC / 25.6 ºC                             │
+│    • Índex de Risc de Tall:    Risc Baix (Normal) (10%)                      │
+│    • Objectiu Reserva Nocturna:  100.0% de Bateria SAI                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 🌡️ CLIMA & METEOROLOGIA (Zigbee en RAM + Inforatge Ador)                     │
-│    • Habitació xiquets:     27.90 ºC | 58.0 %  [🔋 Pila: 100%]               │
-│    • Saló (Multisensor):    27.40 ºC | 56.0 % | 420 Lux | 🚶 Presència  [🔋 20%] │
-│    • Climatització AC:      ❄️ Mode Fred a 24 ºC [Encès]                     │
-│    • Exterior Ador (Oficial): 28.5 ºC | 65 % | 4 km/h SE | 1015 hPa          │
+│    • Habitació xiquets:     28.00 ºC | 46.0 %  [🔋 Pila: 100%]               │
+│    • Saló (Multisensor):    28.40 ºC | 47.0 % | 0 Lux | 🟢 Repòs  [🔋 20%]   │
+│    • Exterior Ador (Oficial): 24.3 ºC | 49 % | 0 km/h E | 1020 hPa           │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ⚡ CONSUMS & ACTUADORS INTEL·LIGENTS (Domòtica Tuya)                         │
+│    • Climatització AC:      ❄️ Mode Fred a 26 ºC [Encès]                     │
+│    • Termo Elèctric:        ⚪ En Repòs (0 W) [Apagat]                       │
+│      └─ Darrer cicle a 60ºC:  Ahir (Fa 1 dia)                                │
+│    • Cuina (Microones/Torr.):  [Encès (0 W)]                                 │
+│    • Cuina (Cafetera):        [Apagat]                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
   Guardià Natiu (caseta-guardian): 🟢 ACTIU I VIGILANT A CERBO GX (Venus OS)
 ```
