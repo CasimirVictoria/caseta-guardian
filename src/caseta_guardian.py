@@ -1055,6 +1055,24 @@ class CasetaGuardian:
         new_mode_str = mode_names.get(target_mode, f"Mode {target_mode}")
         
         log.info(f"🔄 CANVI DE MODE MULTIPLUS: {old_mode_str} -> {new_mode_str} ({reason})")
+
+        # 1. Intent D-Bus Natiu directe sobre VE.Bus (Instantani <0.1ms)
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            vebus_service = None
+            for name in bus.list_names():
+                if name.startswith("com.victronenergy.vebus"):
+                    vebus_service = name
+                    break
+            if vebus_service:
+                obj = bus.get_object(vebus_service, "/Mode")
+                obj.SetValue(dbus.Int32(target_mode), dbus_interface="com.victronenergy.BusItem")
+                log.info(f"⚙️ [DBUS NATIU] MultiPlus-II Mode canviat a {new_mode_str} via {vebus_service}")
+        except Exception as e:
+            log.debug(f"DBus direct no disponible per a VE.Bus Mode, usant MQTT: {e}")
+
+        # 2. Publicació MQTT
         topic = f"W/{self.portal_id}/vebus/276/Mode"
         payload = json.dumps({"value": target_mode})
         self.client.publish(topic, payload)
