@@ -1034,28 +1034,9 @@ class CasetaGuardian:
                 target = 1300.0
                 reason = f"🌙 Arbitratge Vall P3 (06h-07h) -> Setpoint 1300W (Tot de Xarxa Barata a 0.08 €/kWh)"
             else:
-                # ☀️ B. Franja Diürna amb Excedents Solars (09:30h - 16:00h)
-                today_est = getattr(self, "today_kwh_est", 5.0)
-                if today_est >= 5.0:
-                    # ☀️ Dia Clar / Assolellat (>=5.0 kWh): Buidar Vas Buit fins al 70%
-                    if self.soc >= 70.0:
-                        target = 200.0
-                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sol Previst {today_est:.1f}kWh (SoC {self.soc:.1f}% >= 70%) -> Setpoint 200W (Buidant Vas)"
-                    else:
-                        target = 800.0
-                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sòl Assolit (SoC {self.soc:.1f}% < 70%) -> Setpoint 800W (Congelant Bateria)"
-                elif today_est >= 3.5:
-                    # 🌤️ Dia Moderat (3.5 - 5.0 kWh): Buidar Vas Buit fins al 78%
-                    if self.soc >= 78.0:
-                        target = 400.0
-                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sol Previst {today_est:.1f}kWh (SoC {self.soc:.1f}% >= 78%) -> Setpoint 400W"
-                    else:
-                        target = 800.0
-                        reason = f"♨️ Termo ({termo_p:.0f}W) & Sòl Assolit (SoC {self.soc:.1f}% < 78%) -> Setpoint 800W"
-                else:
-                    # ☁️ Dia Ennuvolat (<3.5 kWh): Xarxa a 800W per protegir la bateria sense sol
-                    target = 800.0
-                    reason = f"☁️ Dia Ennuvolat ({today_est:.1f}kWh) & Termo ({termo_p:.0f}W) -> Setpoint 800W (Protecció Sense Sol)"
+            # ☀️ B. Termo Actiu Diürn: Blindatge de bateria a 800W (zero trompada)
+            target = 800.0
+            reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W (Blindatge Total Bateria - Zero Trompada)"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
