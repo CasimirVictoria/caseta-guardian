@@ -37,18 +37,23 @@ except ImportError:
     print("Error: paho-mqtt no està instal·lat. Instal·la'l amb 'uv pip install paho-mqtt'")
     sys.exit(1)
 
+def get_madrid_now() -> datetime.datetime:
+    """Retorna la data i hora exacta a la zona horària oficial de València/Madrid (peninsular)."""
+    if MADRID_TZ:
+        return datetime.datetime.now(MADRID_TZ)
+    return datetime.datetime.now()
+
+def madrid_log_timetuple(*args):
+    return get_madrid_now().timetuple()
+
+logging.Formatter.converter = madrid_log_timetuple
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger("caseta-guardian")
-
-def get_madrid_now() -> datetime.datetime:
-    """Retorna la data i hora exacta a la zona horària de Madrid (peninsular)."""
-    if MADRID_TZ:
-        return datetime.datetime.now(MADRID_TZ)
-    return datetime.datetime.now()
 
 def get_easter_date(year: int) -> datetime.date:
     """Calcula el Diumenge de Pasqua amb l'algorisme de Butcher/Gauss."""
