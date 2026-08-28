@@ -392,7 +392,7 @@ def main():
         print(box_line(f"   • Índex de Risc de Tall:    {risk_color}{BOLD}{risk_label} ({risk}%){RESET}"))
         print(box_line(f"   • Objectiu Reserva Nocturna:  {BOLD}{target_soc}% de Bateria SAI{RESET}"))
 
-    # 6. CLIMA & BIOCLIMÀTICA (ZIGBEE + INFORATGE)
+    # 6. CLIMA & METEOROLOGIA (ZIGBEE + INFORATGE)
     if mqtt_clima or mqtt_inforatge:
         sensors_dict = (mqtt_clima.get("sensors") if mqtt_clima else {}) or {}
         s1 = sensors_dict.get("sensor_1") or {}
@@ -421,8 +421,25 @@ def main():
             bat_str2 = f"  [{GREEN}🔋 {bat2}%{RESET}]" if bat2 is not None else ""
             print(box_line(f"   • {BOLD}Saló (Multisensor):{RESET}    {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str}{bat_str2}"))
 
+        # Inforatge Ador
+        if mqtt_inforatge and mqtt_inforatge.get("temperatura") is not None:
+            t_ext = mqtt_inforatge.get("temperatura")
+            h_ext = mqtt_inforatge.get("humitat")
+            v_vel = mqtt_inforatge.get("vent_vel", 0)
+            v_dir = mqtt_inforatge.get("vent_dir", "")
+            p_bar = mqtt_inforatge.get("pressio")
+            print(box_line(f"   • {BOLD}Exterior Ador (Oficial):{RESET} {BLUE}{BOLD}{t_ext:.1f} ºC{RESET} | {CYAN}{BOLD}{h_ext:.0f} %{RESET} | {v_vel} km/h {v_dir} | {p_bar} hPa"))
+
+    # 7. CONSUMS & ACTUADORS DIRIGITS (DOMÒTICA TUYA)
+    if mqtt_ac or mqtt_termo or mqtt_doble:
+        print("├" + "─" * (BOX_WIDTH + 2) + "┤")
+        print(box_line(f"⚡ {BOLD}CONSUMS & ACTUADORS INTEL·LIGENTS (Domòtica Tuya){RESET}"))
+
         t_ext = mqtt_inforatge.get("temperatura") if mqtt_inforatge else None
-        t_int = t2 if t2 is not None else (t1 if t1 is not None else 26.5)
+        sensors_dict = (mqtt_clima.get("sensors") if mqtt_clima else {}) or {}
+        s2 = sensors_dict.get("sensor_2") or {}
+        s1 = sensors_dict.get("sensor_1") or {}
+        t_int = s2.get("temperatura") if s2.get("temperatura") is not None else (s1.get("temperatura") if s1.get("temperatura") is not None else 26.5)
 
         # Climatització AC (Mitsubishi Electric / Tuya S06)
         if mqtt_ac and mqtt_ac.get("power") is not None:
@@ -494,15 +511,6 @@ def main():
 
             print(box_line(f"   • {BOLD}Cuina (Microones/Torr.):{RESET}  [{ch1_str}]{kwh_str}"))
             print(box_line(f"   • {BOLD}Cuina (Cafetera):{RESET}        [{ch2_str}]"))
-
-        # Inforatge Ador
-        if mqtt_inforatge and mqtt_inforatge.get("temperatura") is not None:
-            t_ext = mqtt_inforatge.get("temperatura")
-            h_ext = mqtt_inforatge.get("humitat")
-            v_vel = mqtt_inforatge.get("vent_vel", 0)
-            v_dir = mqtt_inforatge.get("vent_dir", "")
-            p_bar = mqtt_inforatge.get("pressio")
-            print(box_line(f"   • {BOLD}Exterior Ador (Oficial):{RESET} {BLUE}{BOLD}{t_ext:.1f} ºC{RESET} | {CYAN}{BOLD}{h_ext:.0f} %{RESET} | {v_vel} km/h {v_dir} | {p_bar} hPa"))
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     print(f"  Guardià Natiu (caseta-guardian): {GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}")
