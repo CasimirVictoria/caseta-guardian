@@ -315,10 +315,17 @@ class CasetaGuardian:
             log.error(f"Error registrant històric permanent diari: {e}")
 
     def send_notification(self, title: str, message: str, priority: str = "default", tags: str = "zap"):
+        # 🌙 0. MODE NO MOLESTAR NOCTURN (23:00h a 08:00h Madrid)
+        # Silenci absolut al mòbil: zero notificacions rutinàries, de termo o xarxa mentre dorms!
+        now_madrid = get_madrid_now()
+        if (now_madrid.hour >= 23 or now_madrid.hour < 8) and priority != "emergency":
+            log.info(f"🌙 [SILENCI NOCTURN DND 23h-08h] Notificació silenciada: {title}")
+            return
+
         # 🔕 1. Silenci d'arrencada: Durant els primers 60 segons, silenciar notificacions rutinàries
         now = time.time()
         if hasattr(self, "daemon_start_time") and (now - self.daemon_start_time < 60):
-            if priority not in ("urgent", "high", "5", "4"):
+            if priority not in ("urgent", "high", "5", "4", "emergency"):
                 log.info(f"🔕 [SILENCI D'ARRENCADA] Notificació rutinària silenciada: {title}")
                 return
 
