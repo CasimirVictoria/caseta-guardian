@@ -185,7 +185,8 @@ class CasetaGuardian:
         self.termo_end_time_str = ""
         self.termo_active_seconds_today = 0.0
         self.termo_currently_heating = False
-        self.termo_last_heated_date = "2026-08-27"
+        self.termo_last_heated_date = "2026-08-28"
+        self.termo_est_temp = 60.0
         self.last_termo_calc_time = time.time()
         
         # Recuperació d'estat persistent a disc
@@ -194,7 +195,8 @@ class CasetaGuardian:
             if os.path.exists(p_file):
                 with open(p_file, "r") as _f:
                     _d = json.load(_f)
-                    self.termo_last_heated_date = _d.get("termo_last_heated_date", "2026-08-27")
+                    self.termo_last_heated_date = _d.get("termo_last_heated_date", "2026-08-28")
+                    self.termo_est_temp = float(_d.get("termo_est_temp", 60.0))
         except Exception:
             pass
         
@@ -507,17 +509,30 @@ class CasetaGuardian:
                 self.last_termo_calc_time = now
                 now_madrid = get_madrid_now()
 
+                # Model Físic Calorimètric (Bessó Digital ACS 100L)
+                hours_step = dt_termo / 3600.0
                 if power_w >= 100.0:
+                    kwh_step = (power_w / 1000.0) * hours_step
+                    self.termo_est_temp = min(80.0, self.termo_est_temp + (kwh_step * 8.605))
                     if not getattr(self, "termo_currently_heating", False):
                         self.termo_currently_heating = True
                         if not self.termo_start_time_str:
                             self.termo_start_time_str = now_madrid.strftime("%H:%M")
-                    self.termo_kwh_today += (power_w / 1000.0) * (dt_termo / 3600.0)
+                    self.termo_kwh_today += kwh_step
                     self.termo_active_seconds_today += dt_termo
                 else:
+                    self.termo_est_temp = max(20.0, self.termo_est_temp - (hours_step * 0.35))
                     if getattr(self, "termo_currently_heating", False):
                         self.termo_currently_heating = False
                         self.termo_end_time_str = now_madrid.strftime("%H:%M")
+                        if self.termo_est_temp >= 55.0:
+                            self.termo_est_temp = 60.0
+                            self.termo_heated_today = True
+                            self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
+
+                if is_on and power_w < 50.0 and self.termo_est_temp >= 58.0:
+                    self.termo_heated_today = True
+                    self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
 
                 days_since_60 = None
                 if getattr(self, "termo_last_heated_date", ""):
@@ -535,6 +550,7 @@ class CasetaGuardian:
                     "voltage_v": round(voltage_v, 1),
                     "current_a": round(current_a, 2),
                     "source": "localtuya",
+                    "temp_c": round(self.termo_est_temp, 1),
                     "kwh_today": round(self.termo_kwh_today, 2),
                     "start_time": self.termo_start_time_str,
                     "end_time": self.termo_end_time_str,
@@ -592,17 +608,29 @@ class CasetaGuardian:
                 self.last_termo_calc_time = now
                 now_madrid = get_madrid_now()
 
+                hours_step = dt_termo / 3600.0
                 if power_w >= 100.0:
+                    kwh_step = (power_w / 1000.0) * hours_step
+                    self.termo_est_temp = min(80.0, self.termo_est_temp + (kwh_step * 8.605))
                     if not getattr(self, "termo_currently_heating", False):
                         self.termo_currently_heating = True
                         if not self.termo_start_time_str:
                             self.termo_start_time_str = now_madrid.strftime("%H:%M")
-                    self.termo_kwh_today += (power_w / 1000.0) * (dt_termo / 3600.0)
+                    self.termo_kwh_today += kwh_step
                     self.termo_active_seconds_today += dt_termo
                 else:
+                    self.termo_est_temp = max(20.0, self.termo_est_temp - (hours_step * 0.35))
                     if getattr(self, "termo_currently_heating", False):
                         self.termo_currently_heating = False
                         self.termo_end_time_str = now_madrid.strftime("%H:%M")
+                        if self.termo_est_temp >= 55.0:
+                            self.termo_est_temp = 60.0
+                            self.termo_heated_today = True
+                            self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
+
+                if is_on and power_w < 50.0 and self.termo_est_temp >= 58.0:
+                    self.termo_heated_today = True
+                    self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
 
                 days_since_60 = None
                 if getattr(self, "termo_last_heated_date", ""):
@@ -618,6 +646,18 @@ class CasetaGuardian:
                     "is_on": is_on,
                     "power_w": round(power_w, 1),
                     "voltage_v": round(voltage_v, 1),
+                    "current_a": round(current_a, 2),
+                    "source": "cloud",
+                    "temp_c": round(self.termo_est_temp, 1),
+                    "kwh_today": round(self.termo_kwh_today, 2),
+                    "start_time": self.termo_start_time_str,
+                    "end_time": self.termo_end_time_str,
+                    "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
+                    "is_heating": self.termo_currently_heating,
+                    "last_heated_date": getattr(self, "termo_last_heated_date", ""),
+                    "days_since_60": days_since_60,
+                    "timestamp": now
+                }
                     "current_a": round(current_a, 2),
                     "source": "tuya_cloud",
                     "kwh_today": round(self.termo_kwh_today, 2),
