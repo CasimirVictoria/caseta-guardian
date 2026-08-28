@@ -878,29 +878,35 @@ class CasetaGuardian:
         t_int = t2 if t2 is not None else (t1 if t1 is not None else 26.5)
         t_ext = self.ext_temp
 
-        # 🍃 LLEI 0: Free-Cooling Bioclimàtic (Apagat d'AC si a fora fa fresca)
-        # Si T_ext < 25.0ºC durant >20 minuts (1200s) I T_int < 28.0ºC -> Apaga AC (sense notificació)
-        if t_ext is not None and t_ext < 25.0 and t_int < 28.0:
+        # 🍃 LLEI 0: Free-Cooling Bioclimàtic Diferencial (Apagat d'AC si a fora fa fresca)
+        # Si T_ext < 25.5ºC I T_ext <= T_int - 1.5ºC (a fora fa clarament més fresca que a dins)
+        free_cooling_condition = (
+            t_ext is not None
+            and t_ext < 25.5
+            and (t_ext <= t_int - 1.5 or t_ext < 23.0)
+        )
+
+        if free_cooling_condition:
             if self.free_cooling_start_time is None:
                 self.free_cooling_start_time = now
-                log.info(f"🍃 Iniciant compte enrere de 20 minuts de Free-Cooling (T_ext: {t_ext:.1f}ºC < 25ºC | T_int: {t_int:.1f}ºC < 28ºC)...")
-            elif now - self.free_cooling_start_time >= 1200:
+                log.info(f"🍃 Iniciant compte enrere de 15 minuts de Free-Cooling (T_ext: {t_ext:.1f}ºC < 25.5ºC | T_int: {t_int:.1f}ºC | ΔT: {t_int - t_ext:.1f}ºC)...")
+            elif now - self.free_cooling_start_time >= 900:
                 if self.ac_current_power != 0:
                     self.send_ac_tuya_command(
                         power=0,
-                        reason=f"🍃 Free-Cooling: T_ext ({t_ext:.1f}ºC < 25ºC) >20 min i T_int ({t_int:.1f}ºC < 28ºC) -> AC Apagat (Sense Notificació)"
+                        reason=f"🍃 Free-Cooling Diferencial: T_ext ({t_ext:.1f}ºC) <= T_int ({t_int:.1f}ºC) - 1.5ºC -> AC Apagat (Sense Notificació)"
                     )
                     self.ac_turned_off_by_free_cooling = True
-                    log.info(f"🍃 Free-Cooling aplicat: AC apagat silenciadament per exterior fresc ({t_ext:.1f}ºC).")
+                    log.info(f"🍃 Free-Cooling aplicat: AC apagat silenciadament per exterior fresc ({t_ext:.1f}ºC vs {t_int:.1f}ºC int).")
                 return
         else:
             self.free_cooling_start_time = None
 
         # Si l'AC s'havia apagat per Free-Cooling, comprova si cal re-encendre:
         if self.ac_turned_off_by_free_cooling:
-            # Condicions de re-encesa: T_int >= 28.8ºC (estiga com estiga fora) O T_ext >= 27.0ºC
-            if t_int >= 28.8 or (t_ext is not None and t_ext >= 27.0):
-                log.info(f"🔥 Finalitzant Free-Cooling (T_int: {t_int:.1f}ºC >= 28.8ºC o T_ext: {t_ext}ºC >= 27ºC). Re-activant climatització...")
+            # Condicions de re-encesa: T_ext >= 26.5ºC O (T_int >= 29.5ºC I T_ext >= T_int - 0.5ºC)
+            if (t_ext is not None and t_ext >= 26.5) or (t_int >= 29.5 and (t_ext is None or t_ext >= t_int - 0.5)):
+                log.info(f"🔥 Finalitzant Free-Cooling (T_ext: {t_ext}ºC o T_int: {t_int:.1f}ºC). Re-activant climatització...")
                 self.ac_turned_off_by_free_cooling = False
             else:
                 # Mantindre l'AC apagat mentre dure el Free-Cooling
