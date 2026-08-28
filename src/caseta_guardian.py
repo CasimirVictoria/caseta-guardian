@@ -290,7 +290,7 @@ class CasetaGuardian:
         try:
             cov = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
             cost = self.calculate_today_cost()
-            is_hol = "SI" if self.is_holiday_or_weekend() else "NO"
+            is_hol = "SI" if self.is_holiday else "NO"
             
             with open(HISTORY_CSV_FILE, "a", newline="") as f:
                 w = csv.writer(f)
