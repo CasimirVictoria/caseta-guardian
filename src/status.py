@@ -151,6 +151,8 @@ def get_telemetry():
             and mqtt_stats[0] is not None
             and mqtt_forecast[0] is not None
             and mqtt_clima[0] is not None
+            and mqtt_termo[0] is not None
+            and mqtt_doble[0] is not None
         ):
             break
         
@@ -434,18 +436,28 @@ def main():
             t_end = mqtt_termo.get("end_time", "")
             act_mins = mqtt_termo.get("active_mins", 0)
             is_heating = mqtt_termo.get("is_heating", False) or (p_w >= 100.0)
+            days_60 = mqtt_termo.get("days_since_60")
 
             if is_heating:
                 time_str = f"des de les {t_start}h" if t_start else "ara"
                 termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Calfant {time_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
-            elif t_start:
+            elif t_start and kwh > 0.3:
                 duration_str = f" ({act_mins} min)" if act_mins > 0 else ""
                 end_str = f"{t_end}h" if t_end else "completat"
-                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{GREEN}Calfat {t_start}h - {end_str}{duration_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
-            elif is_on:
-                termo_str = f"{CYAN}♨️ Preparat (0 W){RESET} [{CYAN}Endoll Encès{RESET}]"
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{GREEN}Calfat hui {t_start}h - {end_str}{duration_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
+            elif is_on and p_w > 0:
+                termo_str = f"{CYAN}♨️ Preparat ({p_w:.0f} W){RESET} [{CYAN}Endoll Encès{RESET}]"
             else:
-                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}]"
+                if days_60 == 0:
+                    d_info = f"{GREEN}Calfat a 60ºC hui{RESET}"
+                elif days_60 == 1:
+                    d_info = f"Darrer calfat a 60ºC: {CYAN}Ahir (Fa 1 dia){RESET}"
+                elif days_60 is not None and days_60 > 1:
+                    d_col = YELLOW if days_60 <= 3 else RED
+                    d_info = f"Darrer calfat a 60ºC: {d_col}Fa {days_60} dies{RESET}"
+                else:
+                    d_info = f"{DIM}Apagat{RESET}"
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{d_info}]"
             print(box_line(f"   • {BOLD}Termo Elèctric:{RESET}        {termo_str}"))
 
         # Endoll Doble Cuina (Microones/Torradora & Cafetera)

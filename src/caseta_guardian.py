@@ -185,7 +185,18 @@ class CasetaGuardian:
         self.termo_end_time_str = ""
         self.termo_active_seconds_today = 0.0
         self.termo_currently_heating = False
+        self.termo_last_heated_date = "2026-08-27"
         self.last_termo_calc_time = time.time()
+        
+        # Recuperació d'estat persistent a disc
+        try:
+            p_file = "/data/caseta-guardian/caseta_daily_stats.json" if os.path.exists("/data/caseta-guardian") else "/tmp/caseta_daily_stats.json"
+            if os.path.exists(p_file):
+                with open(p_file, "r") as _f:
+                    _d = json.load(_f)
+                    self.termo_last_heated_date = _d.get("termo_last_heated_date", "2026-08-27")
+        except Exception:
+            pass
         
         # Endoll Doble Cuina (LocalTuya: Microones/Torradora + Cafetera)
         self.doble_status = {}
@@ -508,6 +519,16 @@ class CasetaGuardian:
                         self.termo_currently_heating = False
                         self.termo_end_time_str = now_madrid.strftime("%H:%M")
 
+                days_since_60 = None
+                if getattr(self, "termo_last_heated_date", ""):
+                    try:
+                        d_last = datetime.datetime.strptime(self.termo_last_heated_date, "%Y-%m-%d").date()
+                        days_since_60 = (now_madrid.date() - d_last).days
+                    except Exception:
+                        days_since_60 = None
+                if getattr(self, "termo_heated_today", False):
+                    days_since_60 = 0
+
                 termo_data = {
                     "is_on": is_on,
                     "power_w": round(power_w, 1),
@@ -519,6 +540,8 @@ class CasetaGuardian:
                     "end_time": self.termo_end_time_str,
                     "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
                     "is_heating": self.termo_currently_heating,
+                    "last_heated_date": getattr(self, "termo_last_heated_date", ""),
+                    "days_since_60": days_since_60,
                     "timestamp": now
                 }
                 self.termo_status = termo_data
@@ -581,6 +604,16 @@ class CasetaGuardian:
                         self.termo_currently_heating = False
                         self.termo_end_time_str = now_madrid.strftime("%H:%M")
 
+                days_since_60 = None
+                if getattr(self, "termo_last_heated_date", ""):
+                    try:
+                        d_last = datetime.datetime.strptime(self.termo_last_heated_date, "%Y-%m-%d").date()
+                        days_since_60 = (now_madrid.date() - d_last).days
+                    except Exception:
+                        days_since_60 = None
+                if getattr(self, "termo_heated_today", False):
+                    days_since_60 = 0
+
                 termo_data = {
                     "is_on": is_on,
                     "power_w": round(power_w, 1),
@@ -592,6 +625,8 @@ class CasetaGuardian:
                     "end_time": self.termo_end_time_str,
                     "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
                     "is_heating": self.termo_currently_heating,
+                    "last_heated_date": getattr(self, "termo_last_heated_date", ""),
+                    "days_since_60": days_since_60,
                     "timestamp": now
                 }
                 self.termo_status = termo_data
@@ -1110,6 +1145,7 @@ class CasetaGuardian:
             "max_cell_delta_today": round(self.max_cell_delta_today, 1),
             "soh_bms": round(self.soh, 0),
             "termo_heated_today": getattr(self, "termo_heated_today", False),
+            "termo_last_heated_date": getattr(self, "termo_last_heated_date", "2026-08-27"),
             "termo_kwh_today": round(getattr(self, "termo_kwh_today", 0.0), 2),
             "termo_start_time_str": getattr(self, "termo_start_time_str", ""),
             "termo_end_time_str": getattr(self, "termo_end_time_str", ""),
