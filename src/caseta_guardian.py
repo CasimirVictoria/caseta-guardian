@@ -658,17 +658,6 @@ class CasetaGuardian:
                     "days_since_60": days_since_60,
                     "timestamp": now
                 }
-                    "current_a": round(current_a, 2),
-                    "source": "tuya_cloud",
-                    "kwh_today": round(self.termo_kwh_today, 2),
-                    "start_time": self.termo_start_time_str,
-                    "end_time": self.termo_end_time_str,
-                    "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
-                    "is_heating": self.termo_currently_heating,
-                    "last_heated_date": getattr(self, "termo_last_heated_date", ""),
-                    "days_since_60": days_since_60,
-                    "timestamp": now
-                }
                 self.termo_status = termo_data
                 if self.client:
                     self.client.publish("caseta/termo", json.dumps({"value": termo_data}), retain=True)
@@ -981,9 +970,6 @@ class CasetaGuardian:
 
     def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
-        if not self.client or self.portal_id in ("c0619ab2xxxx", "+", "#"):
-            return
-        
         now = time.time()
         # Interval suau de 2 minuts (120 segons) per evitar oscil·lacions
         if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:
@@ -1007,13 +993,8 @@ class CasetaGuardian:
             target = 100.0
             phase_name = "🌙 Nit i Matinada Vall P3 (100% Minimum SOC & Zero Descàrrega a 0.08 €/kWh)"
 
-        # 3. ☕ Matí Transició Diürna (08:00h a 09:29h Madrid)
-        elif 8.0 <= time_decimal < 9.5:
-            target = 85.0
-            phase_name = "☕ Matí Transició (85% Coixí Inicial)"
-
-        # 4. ☀️ Finestra Solar Central (09:30h a 16:29h Madrid): Modulació Dinàmica Adaptativa
-        elif 9.5 <= time_decimal < 16.5:
+        # 3. ☀️ Finestra Diürna Adaptativa (08:00h a 16:29h Madrid): Modulació Dinàmica per Sol Real
+        elif 8.0 <= time_decimal < 16.5:
             today_est = getattr(self, "today_kwh_est", 4.5)
             rem_sun = max(0.0, today_est - self.solar_kwh_today)
             cur_pv = getattr(self, "pv_p", 0.0)
@@ -1081,16 +1062,14 @@ class CasetaGuardian:
         # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W)
         if termo_on and termo_p >= 500.0:
             now_madrid = get_madrid_now()
-            time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
-            
             # 🌙 A. Franja Matinada Vall P3 (06:00h - 07:00h): Xarxa total per aprofitar tarifa barata (0.08 €/kWh)
             if 6.0 <= time_decimal < 7.0:
                 target = 1300.0
                 reason = f"🌙 Arbitratge Vall P3 (06h-07h) -> Setpoint 1300W (Tot de Xarxa Barata a 0.08 €/kWh)"
             else:
-            # ☀️ B. Termo Actiu Diürn: Blindatge de bateria a 800W (zero trompada)
-            target = 800.0
-            reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W (Blindatge Total Bateria - Zero Trompada)"
+                # ☀️ B. Termo Actiu Diürn: Blindatge de bateria a 800W (zero trompada)
+                target = 800.0
+                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W (Blindatge Total Bateria - Zero Trompada)"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
