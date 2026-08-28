@@ -949,10 +949,20 @@ class CasetaGuardian:
         self.target_reserve_soc = target
 
         if self.last_applied_min_soc != target:
+            # 1. Intent D-Bus Natiu si estem a Cerbo GX (Instantani <0.1ms i atòmic)
+            try:
+                import dbus
+                bus = dbus.SystemBus()
+                obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/BatteryLife/MinimumSocLimit")
+                obj.SetValue(dbus.Double(target), dbus_interface="com.victronenergy.BusItem")
+                log.info(f"⚙️ [DBUS NATIU] Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% [{phase_name}]")
+            except Exception as e:
+                log.debug(f"DBus direct no disponible, usant MQTT: {e}")
+
+            # 2. Publicació MQTT per a clients externs
             topic = f"W/{self.portal_id}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
             payload = json.dumps({"value": target})
             self.client.publish(topic, payload)
-            log.info(f"⚙️ Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% [{phase_name}]")
             self.last_applied_min_soc = target
 
     def sync_grid_setpoint(self):
