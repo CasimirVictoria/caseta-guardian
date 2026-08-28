@@ -328,6 +328,11 @@ def main():
     else:
         grid_status = f"{GREEN}Equilibrada / Neutre ({grid_p:.0f} W){RESET}"
     print(box_line(f"   • Estat de la Xarxa:       {grid_status}"))
+    
+    grid_setpoint = data.get(f"N/{portal}/settings/0/Settings/CGwacs/AcPowerSetPoint")
+    if grid_setpoint is not None:
+        sp_label = "⚡ Estalvi Màxim" if grid_setpoint <= 50 else ("⚡ Amortidor Basal" if grid_setpoint <= 200 else "⚡ Potència Sol·licitada")
+        print(box_line(f"   • Consigna Grid Setpoint:  {CYAN}{BOLD}{grid_setpoint:.0f} W{RESET}  [{sp_label}]"))
 
     # 2. BATERIA
     print("├" + "─" * (BOX_WIDTH + 2) + "┤")
@@ -416,15 +421,23 @@ def main():
             bat_str2 = f"  [{GREEN}🔋 {bat2}%{RESET}]" if bat2 is not None else ""
             print(box_line(f"   • {BOLD}Saló (Multisensor):{RESET}    {GREEN}{BOLD}{t2:.2f} ºC{RESET} | {CYAN}{BOLD}{h2:.1f} %{RESET} | {YELLOW}{lux_str}{RESET} | {pres_str}{bat_str2}"))
 
+        t_ext = mqtt_inforatge.get("temperatura") if mqtt_inforatge else None
+        t_int = t2 if t2 is not None else (t1 if t1 is not None else 26.5)
+
         # Climatització AC (Mitsubishi Electric / Tuya S06)
         if mqtt_ac and mqtt_ac.get("power") is not None:
             ac_power = mqtt_ac.get("power")
             ac_temp = mqtt_ac.get("temp", 26)
             ac_mode = mqtt_ac.get("mode", "Fred")
+            ac_reason = mqtt_ac.get("reason", "")
             if ac_power == 1:
                 ac_str = f"{CYAN}❄️ Mode {ac_mode} a {BOLD}{ac_temp} ºC{RESET} [{GREEN}Encès{RESET}]"
             else:
-                ac_str = f"{DIM}⚪ Apagat / En Repòs{RESET}"
+                if "Free-Cooling" in ac_reason or (t_ext is not None and t_ext < 25.5 and (t_ext <= t_int - 1.5 or t_ext < 23.0)):
+                    ext_str = f" (Ext {t_ext:.1f}ºC)" if t_ext is not None else ""
+                    ac_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{CYAN}🍃 Free-Cooling Actiu{ext_str}{RESET}]"
+                else:
+                    ac_str = f"{DIM}⚪ Apagat / En Repòs{RESET}"
             print(box_line(f"   • {BOLD}Climatització AC:{RESET}      {ac_str}"))
 
         # Termo Elèctric (Tuya Plug / Local)
@@ -472,12 +485,14 @@ def main():
             p_w = mqtt_doble.get("power_w", 0.0)
             kwh = mqtt_doble.get("kwh_today", 0.0)
 
-            ch1_str = f"{GREEN}Encès{RESET}" if ch1_on else f"{DIM}Apagat{RESET}"
-            ch2_str = f"{GREEN}Encès{RESET}" if ch2_on else f"{DIM}Apagat{RESET}"
-            p_str = f" ({p_w:.0f} W)" if (ch1_on or ch2_on) and p_w > 0 else ""
-            kwh_str = f" | {BOLD}{kwh:.2f} kWh{RESET}" if kwh > 0 else ""
+            p_ch1 = f" ({p_w:.0f} W)" if ch1_on and p_w > 10 else (" (0 W)" if ch1_on else "")
+            p_ch2 = f" ({p_w:.0f} W)" if ch2_on and not ch1_on and p_w > 10 else (" (0 W)" if ch2_on else "")
+            kwh_str = f" | {BOLD}{kwh:.2f} kWh{RESET}" if kwh > 0.05 else ""
 
-            print(box_line(f"   • {BOLD}Cuina (Microones/Torr.):{RESET}  [{ch1_str}]{p_str}{kwh_str}"))
+            ch1_str = f"{GREEN}Encès{p_ch1}{RESET}" if ch1_on else f"{DIM}Apagat{RESET}"
+            ch2_str = f"{GREEN}Encès{p_ch2}{RESET}" if ch2_on else f"{DIM}Apagat{RESET}"
+
+            print(box_line(f"   • {BOLD}Cuina (Microones/Torr.):{RESET}  [{ch1_str}]{kwh_str}"))
             print(box_line(f"   • {BOLD}Cuina (Cafetera):{RESET}        [{ch2_str}]"))
 
         # Inforatge Ador
