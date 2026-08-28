@@ -308,8 +308,29 @@ def main():
     kwh_utils = max(0.0, ((soc - SHUTDOWN_SOC_PERCENT) / 100.0) * NET_CAPACITY_KWH)
     kwh_fins_escut = max(0.0, ((soc - SAI_TARGET_RESERVE_SOC) / 100.0) * NET_CAPACITY_KWH)
 
-    # 1. BATERIA
+    # 1. MULTIPLUS I XARXA
     print("┌" + "─" * (BOX_WIDTH + 2) + "┐")
+    print(box_line(f"🔌 {BOLD}INVERSOR MULTIPLUS-II & XARXA EXTERIOR{RESET}"))
+    mode_map = {
+        1: "Només Carregador",
+        2: "Sols Inverter",
+        3: "ON (Connectat a Xarxa)",
+        4: "OFF (Apagat)"
+    }
+    mode_desc = mode_map.get(multi_mode, f"Mode {multi_mode}")
+    print(box_line(f"   • Mode MultiPlus:          {mode_desc}"))
+    print(box_line(f"   • Tensió Xarxa L1:         {grid_v:.1f} V"))
+    
+    if grid_p > 15:
+        grid_status = f"{BLUE}Important de Xarxa ({grid_p:.0f} W){RESET}"
+    elif grid_p < -15:
+        grid_status = f"{MAGENTA}Abocant cap enfora ({-grid_p:.0f} W){RESET}"
+    else:
+        grid_status = f"{GREEN}Equilibrada / Neutre ({grid_p:.0f} W){RESET}"
+    print(box_line(f"   • Estat de la Xarxa:       {grid_status}"))
+
+    # 2. BATERIA
+    print("├" + "─" * (BOX_WIDTH + 2) + "┤")
     print(box_line(f"🔋 {BOLD}BATERIA PYLONTECH US3000C (48V LiFePO4 / 3.55 kWh){RESET}"))
     
     soc_color = GREEN if soc >= 70 else (YELLOW if soc >= 40 else RED)
@@ -331,33 +352,12 @@ def main():
     if pylon_t is not None:
         print(box_line(f"   • Temperatura BMS:         {pylon_t:.1f} ºC"))
 
-    # 2. SOLAR I CONSUM
+    # 3. SOLAR I CONSUM
     print("├" + "─" * (BOX_WIDTH + 2) + "┤")
     print(box_line(f"☀️ {BOLD}ENERGIA SOLAR & CONSUM DE LA CASETA{RESET}"))
     print(box_line(f"   • Producció Solar Huawei:  {GREEN}{BOLD}{pv_p:>6.1f} W{RESET}"))
     print(box_line(f"   • Consum Casa (AC Loads):  {YELLOW}{BOLD}{ac_loads:>6.1f} W{RESET}"))
     print(box_line(f"   • Freqüència de CA Caseta: {freq:.2f} Hz"))
-
-    # 3. MULTIPLUS I XARXA
-    print("├" + "─" * (BOX_WIDTH + 2) + "┤")
-    print(box_line(f"🔌 {BOLD}INVERSOR MULTIPLUS-II & XARXA EXTERIOR{RESET}"))
-    mode_map = {
-        1: "Només Carregador",
-        2: "Sols Inverter",
-        3: "ON (Connectat a Xarxa)",
-        4: "OFF (Apagat)"
-    }
-    mode_desc = mode_map.get(multi_mode, f"Mode {multi_mode}")
-    print(box_line(f"   • Mode MultiPlus:          {mode_desc}"))
-    print(box_line(f"   • Tensió Xarxa L1:         {grid_v:.1f} V"))
-    
-    if grid_p > 15:
-        grid_status = f"{BLUE}Important de Xarxa ({grid_p:.0f} W){RESET}"
-    elif grid_p < -15:
-        grid_status = f"{MAGENTA}Abocant cap enfora ({-grid_p:.0f} W){RESET}"
-    else:
-        grid_status = f"{GREEN}Equilibrada / Neutre ({grid_p:.0f} W){RESET}"
-    print(box_line(f"   • Estat de la Xarxa:       {grid_status}"))
 
     # 4. BALANÇ D'AVUI
     print("├" + "─" * (BOX_WIDTH + 2) + "┤")
