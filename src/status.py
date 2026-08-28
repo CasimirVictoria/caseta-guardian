@@ -312,13 +312,9 @@ def main():
     
     soc_color = GREEN if soc >= 70 else (YELLOW if soc >= 40 else RED)
     status_str = "[Carregant]" if pylon_i and pylon_i > 0.5 else ("[Descarregant]" if pylon_i and pylon_i < -0.5 else "[En Repòs]")
-    soh_str = f"  (SoH BMS: {soh:.0f}%)" if soh is not None else ""
-    print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc:.1f}%{RESET}  {status_str}{soh_str}"))
-    
     min_soc_ess = data.get(f"N/{portal}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit") or data.get(f"N/{portal}/settings/0/Settings/CGwacs/MinimumSocLimit")
-    if min_soc_ess is not None:
-        print(box_line(f"   • SoC Mínim ESS (Victron): {CYAN}{BOLD}{min_soc_ess:.0f}%{RESET}  [Consigna de descàrrega activa]"))
-        
+    min_str = f"  (Mínim ESS: {CYAN}{BOLD}{min_soc_ess:.0f}%{RESET})" if min_soc_ess is not None else ""
+    print(box_line(f"   • Estat de Càrrega (SoC):  {soc_color}{BOLD}{soc:.1f}%{RESET}  {status_str}{min_str}"))
     print(box_line(f"   • Energia Disponible:      {BOLD}{kwh_actuals:.2f} kWh{RESET} actuals | {GREEN}{kwh_utils:.2f} kWh{RESET} útils (tall {SHUTDOWN_SOC_PERCENT:.0f}%)"))
     print(box_line(f"   • Marge fins a Escut SAI:  {CYAN}{BOLD}{kwh_fins_escut:.2f} kWh{RESET} lliures (abans del sòl del {SAI_TARGET_RESERVE_SOC:.0f}%)"))
     
