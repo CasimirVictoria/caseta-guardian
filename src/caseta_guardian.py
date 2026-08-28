@@ -1012,10 +1012,24 @@ class CasetaGuardian:
             target = 85.0
             phase_name = "☕ Matí Transició (85% Coixí Inicial)"
 
-        # 4. ☀️ Finestra Solar Central d'Estiu (09:30h a 16:29h Madrid): 75% Fix Pla
+        # 4. ☀️ Finestra Solar Central (09:30h a 16:29h Madrid): Modulació Dinàmica Adaptativa
         elif 9.5 <= time_decimal < 16.5:
-            target = 75.0
-            phase_name = "☀️ Finestra Solar Central (75% Fix Pla - Vas Buit 880Wh)"
+            today_est = getattr(self, "today_kwh_est", 4.5)
+            rem_sun = max(0.0, today_est - self.solar_kwh_today)
+            cur_pv = getattr(self, "pv_p", 0.0)
+
+            # ☀️ Cas 1: Sol Abundant (Sol Real >= 500W O Sol Restant >= 4.5 kWh amb Sol Actual >= 250W)
+            if (cur_pv >= 500.0) or (rem_sun >= 4.5 and cur_pv >= 250.0):
+                target = 68.0
+                phase_name = f"☀️ Sol Radiant ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 68% Vas Buit Gran"
+            # 🌤️ Cas 2: Sol Moderat (Sol Real >= 200W O Sol Restant >= 3.0 kWh amb Sol Actual >= 100W)
+            elif (cur_pv >= 200.0) or (rem_sun >= 3.0 and cur_pv >= 100.0):
+                target = 78.0
+                phase_name = f"🌤️ Sol Moderat ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 78% Vas Equilibrat"
+            # ⛅ Cas 3: Sol Feble / Núvols / Cel Tapat (Sol Real < 100W)
+            else:
+                target = 88.0
+                phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
 
         # 5. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
         elif is_weekend_or_hol and time_decimal >= 18.0:
