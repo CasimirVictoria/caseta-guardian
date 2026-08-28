@@ -451,8 +451,7 @@ def main():
                 ac_str = f"{CYAN}❄️ Mode {ac_mode} a {BOLD}{ac_temp} ºC{RESET} [{GREEN}Encès{RESET}]"
             else:
                 if "Free-Cooling" in ac_reason or (t_ext is not None and t_ext < 25.5 and (t_ext <= t_int - 1.5 or t_ext < 23.0)):
-                    ext_str = f" (Ext {t_ext:.1f}ºC)" if t_ext is not None else ""
-                    ac_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{CYAN}🍃 Free-Cooling Actiu{ext_str}{RESET}]"
+                    ac_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{CYAN}🍃 Free-Cooling Actiu{RESET}]"
                 else:
                     ac_str = f"{DIM}⚪ Apagat / En Repòs{RESET}"
             print(box_line(f"   • {BOLD}Climatització AC:{RESET}      {ac_str}"))
