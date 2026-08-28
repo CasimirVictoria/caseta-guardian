@@ -468,24 +468,23 @@ def main():
             is_heating = mqtt_termo.get("is_heating", False) or (p_w >= 100.0)
             days_60 = mqtt_termo.get("days_since_60")
             temp_c = mqtt_termo.get("temp_c", 60.0)
-            temp_str = f" | {YELLOW}🌡️ {temp_c:.1f} ºC{RESET}" if temp_c is not None else ""
 
             if is_heating:
                 time_str = f"des de les {t_start}h" if t_start else "ara"
-                termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Calfant {time_str}{RESET}{temp_str} | {BOLD}{kwh:.2f} kWh{RESET}]"
+                termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Calfant {time_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
             elif t_start and kwh > 0.3:
                 duration_str = f" ({act_mins} min)" if act_mins > 0 else ""
                 end_str = f"{t_end}h" if t_end else "completat"
-                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{GREEN}Calfat hui {t_start}h - {end_str}{duration_str}{RESET}{temp_str} | {BOLD}{kwh:.2f} kWh{RESET}]"
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{GREEN}Calfat hui {t_start}h - {end_str}{duration_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
             elif is_on and p_w > 0:
-                termo_str = f"{CYAN}♨️ Preparat ({p_w:.0f} W){RESET} [{CYAN}Endoll Encès{RESET}{temp_str}]"
+                termo_str = f"{CYAN}♨️ Preparat ({p_w:.0f} W){RESET} [{CYAN}Endoll Encès{RESET}]"
             elif is_on:
-                termo_str = f"{CYAN}♨️ Preparat (0 W){RESET} [{CYAN}Endoll Encès{RESET}{temp_str}]"
+                termo_str = f"{CYAN}♨️ Preparat (0 W){RESET} [{CYAN}Endoll Encès{RESET}]"
             else:
-                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}{temp_str}]"
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}]"
             print(box_line(f"   • {BOLD}Termo Elèctric:{RESET}        {termo_str}"))
 
-            # Línia dedicada per al seguiment tèrmic i antilegionel·la a 60ºC
+            # Línia dedicada per a la Temperatura Estimada i Seguiment 60ºC
             if days_60 == 0:
                 d_info = f"{GREEN}{BOLD}Hui (0 dies){RESET}"
             elif days_60 == 1:
@@ -494,8 +493,10 @@ def main():
                 d_col = YELLOW if days_60 <= 3 else RED
                 d_info = f"{d_col}{BOLD}Fa {days_60} dies{RESET}"
             else:
-                d_info = f"{DIM}Sense dades recents{RESET}"
-            print(box_line(f"     └─ {DIM}Darrer cicle a 60ºC:{RESET}  {d_info}"))
+                d_info = f"{DIM}Sense dades{RESET}"
+
+            t_val = f"{YELLOW}{BOLD}{temp_c:.1f} ºC{RESET}" if temp_c is not None else f"{DIM}N/D{RESET}"
+            print(box_line(f"     └─ {DIM}Temperatura Estimada:{RESET} {t_val}  |  {DIM}Darrer cicle 60ºC:{RESET} {d_info}"))
 
         # Endoll Doble Cuina (Microones/Torradora & Cafetera)
         if mqtt_doble and isinstance(mqtt_doble, dict):
