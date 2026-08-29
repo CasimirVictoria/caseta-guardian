@@ -807,7 +807,68 @@ class CasetaGuardian:
             log.warning(f"Error enviant comanda a Endoll Doble per LAN: {e}")
             return False
 
-    def send_ac_tuya_command(self, power=1, temp=26, mode=0, fan=0, reason=""):
+    def update_ac_status(self):
+        """Consulta l'estat real del comandament virtual de l'AC a Tuya Cloud cada 45 segons."""
+        now = time.time()
+        if now - getattr(self, "last_ac_status_query_time", 0.0) < 45.0:
+            return
+        self.last_ac_status_query_time = now
+
+        cfg = load_config()
+        cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
+        sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
+        base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
+        remote_id = cfg.get("tuya_remote_id", "bfc77f364d40be79e86290")
+
+        try:
+            t_ms = str(int(now * 1000))
+            url_path_token = "/v1.0/token?grant_type=1"
+            content_hash = hashlib.sha256(b"").hexdigest()
+            sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
+            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
+                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+            })
+            with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
+                token = json.loads(rep_tok.read().decode())["result"]["access_token"]
+
+            path_status = f"/v1.0/devices/{remote_id}/status"
+            t_ms = str(int(time.time() * 1000))
+            sign_str = f"{cid}{token}{t_ms}GET\n{content_hash}\n\n{path_status}"
+            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+
+            req_status = urllib.request.Request(f"{base_url}{path_status}", headers={
+                "client_id": cid, "access_token": token, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+            })
+            with urllib.request.urlopen(req_status, timeout=5) as rep:
+                res = json.loads(rep.read().decode())
+                if res.get("success", False):
+                    status_list = res.get("result", [])
+                    status_map = {item["code"]: item["value"] for item in status_list}
+                    pwr_val = status_map.get("power", "0")
+                    pwr = 1 if str(pwr_val) in ("1", "true", "True") else 0
+                    temp = int(status_map.get("temp", self.ac_current_temp))
+                    mode_val = str(status_map.get("mode", "0"))
+                    mode_str = "Fred" if mode_val in ("0", "cool") else "Auto"
+                    
+                    self.ac_current_power = pwr
+                    self.ac_current_temp = temp
+                    
+                    ac_payload = {
+                        "power": pwr,
+                        "temp": temp,
+                        "mode": mode_str,
+                        "reason": "Comandament Tuya / App" if pwr == 1 else "En Repòs",
+                        "timestamp": now
+                    }
+                    if self.client:
+                        self.client.publish("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
+                        if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
+                            self.client.publish(f"N/{self.portal_id}/caseta/ac", json.dumps({"value": ac_payload}), retain=True)
+        except Exception as e:
+            log.debug(f"Error consultant estat AC Tuya: {e}")
+
+    def send_ac_tuya_command(self, power: int = 1, temp: int = 26, mode: int = 0, fan: int = 0, reason: str = ""):
         """Envia ordres d'infrarojos al Mitsubishi Electric mitjançant Tuya Cloud OpenAPI i publica a MQTT."""
         now = time.time()
         self.last_ac_command_time = now
@@ -1074,6 +1135,7 @@ class CasetaGuardian:
         # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W)
         if termo_on and termo_p >= 500.0:
             now_madrid = get_madrid_now()
+            time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
             # 🌙 A. Franja Matinada Vall P3 (06:00h - 07:00h): Xarxa total per aprofitar tarifa barata (0.08 €/kWh)
             if 6.0 <= time_decimal < 7.0:
                 target = 1300.0
@@ -1660,6 +1722,7 @@ class CasetaGuardian:
                 self.sync_grid_setpoint()
                 self.update_energy_forecast()
                 self.update_inforatge()
+                self.update_ac_status()
                 self.update_termo_status()
                 self.update_doble_status()
                 self.update_energy_integrals(now_madrid)
