@@ -807,10 +807,30 @@ class CasetaGuardian:
             log.warning(f"Error enviant comanda a Endoll Doble per LAN: {e}")
             return False
 
-    def update_ac_status(self):
-        """Consulta l'estat real del comandament virtual de l'AC a Tuya Cloud cada 45 segons."""
+    def get_tuya_access_token(self, cid: str, sec: str, base_url: str) -> str:
+        """Obté i reutilitza el token d'accés de Tuya Cloud durant 1 hora (evita fer 2 peticions a cada consulta)."""
         now = time.time()
-        if now - getattr(self, "last_ac_status_query_time", 0.0) < 45.0:
+        if hasattr(self, "_tuya_token") and self._tuya_token and (now - getattr(self, "_tuya_token_time", 0.0) < 3600):
+            return self._tuya_token
+
+        t_ms = str(int(now * 1000))
+        url_path_token = "/v1.0/token?grant_type=1"
+        content_hash = hashlib.sha256(b"").hexdigest()
+        sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
+        sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+        req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
+            "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
+        })
+        with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
+            token = json.loads(rep_tok.read().decode())["result"]["access_token"]
+            self._tuya_token = token
+            self._tuya_token_time = now
+            return token
+
+    def update_ac_status(self):
+        """Consulta l'estat real del comandament virtual de l'AC a Tuya Cloud cada 2 minuts (120s) amb token en memòria cau."""
+        now = time.time()
+        if now - getattr(self, "last_ac_status_query_time", 0.0) < 120.0:
             return
         self.last_ac_status_query_time = now
 
@@ -821,20 +841,13 @@ class CasetaGuardian:
         remote_id = cfg.get("tuya_remote_id", "bfc77f364d40be79e86290")
 
         try:
-            t_ms = str(int(now * 1000))
-            url_path_token = "/v1.0/token?grant_type=1"
-            content_hash = hashlib.sha256(b"").hexdigest()
-            sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
-            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
-                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-            })
-            with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
-                token = json.loads(rep_tok.read().decode())["result"]["access_token"]
+            token = self.get_tuya_access_token(cid, sec, base_url)
+            if not token:
+                return
 
             path_status = f"/v1.0/devices/{remote_id}/status"
             t_ms = str(int(time.time() * 1000))
-            sign_str = f"{cid}{token}{t_ms}GET\n{content_hash}\n\n{path_status}"
+            sign_str = f"{cid}{token}{t_ms}GET\n{content_hash if 'content_hash' in locals() else hashlib.sha256(b'').hexdigest()}\n\n{path_status}"
             sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
 
             req_status = urllib.request.Request(f"{base_url}{path_status}", headers={
