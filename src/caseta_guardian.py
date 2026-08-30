@@ -1384,6 +1384,9 @@ class CasetaGuardian:
         current_minute = now_madrid.minute
         time_decimal = current_hour + (current_minute / 60.0)
 
+        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
+        is_on = self.termo_status.get("is_on", False) if self.termo_status else False
+
         # 🚨 ESCUT D'EMERGÈNCIA: Apagada de Xarxa Exterior / Xarxa Caiguda (<185V o desconnectada)
         grid_present = (getattr(self, "grid_v", 0.0) >= 185.0) and (getattr(self, "grid_status", "") != "Sense Xarxa (Apagada)")
         if not grid_present:
