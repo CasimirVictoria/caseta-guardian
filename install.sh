@@ -7,7 +7,7 @@ cp systemd/caseta-guardian.service "$HOME/.config/systemd/user/"
 
 cat << 'BINEOF' > "$HOME/.local/bin/caseta"
 #!/bin/sh
-exec /usr/bin/uv run --with paho-mqtt python3 "$HOME/Documents/Segon_Cervell/projects/caseta-guardian/src/status.py" "$@"
+exec /usr/bin/uv run --with paho-mqtt python3 "$HOME/Projects/caseta-guardian/src/status.py" "$@"
 BINEOF
 chmod +x "$HOME/.local/bin/caseta"
 
