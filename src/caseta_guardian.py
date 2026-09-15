@@ -145,6 +145,7 @@ class CasetaGuardian:
         self.last_keepalive_time = 0.0
         self.last_applied_min_soc = None
         self.last_soc_eval_time = 0.0
+        self.last_dbus_poll_time = 0.0
         
         # Previsió Open-Meteo
         self.today_kwh_est = 5.0
@@ -172,12 +173,17 @@ class CasetaGuardian:
         # Climatització Autònoma (4 Lleis)
         self.last_ac_command_time = 0.0
         self.last_presence_seen_time = time.time()
-        self.ac_current_power = 1
+        self.ac_current_power = None
         self.ac_current_temp = 26
         self.ac_turned_off_by_guardian = False
         self.ac_turned_off_by_free_cooling = False
+        self.ac_manual_off_time = None
+        self.ac_manual_on_time = None
+        self.last_guardian_ac_power_off_time = 0.0
         self.free_cooling_start_time = None
         self.ext_temp = None
+        self.ext_humidity = 50.0
+        self.rain_today = 0.0
         self.clima_sensors = {}
         
         # Termo Elèctric (Tuya Plug / LocalTuya)
@@ -225,6 +231,15 @@ class CasetaGuardian:
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
         self.load_daily_stats()
+        try:
+            if os.path.exists("/tmp/caseta_inforatge_cache.json"):
+                with open("/tmp/caseta_inforatge_cache.json", "r") as f:
+                    _inf = json.load(f)
+                    self.ext_temp = _inf.get("temperatura")
+                    self.ext_humidity = float(_inf.get("humitat", 50.0))
+                    self.rain_today = float(_inf.get("pluja_avui", 0.0))
+        except Exception:
+            pass
 
     def check_is_holiday_or_weekend(self, now=None) -> bool:
         """Determina si avui és cap de setmana o festiu oficial (P3 Vall 24h) - Executat NOMÉS 1 cop al dia a mitjanit."""
@@ -276,6 +291,12 @@ class CasetaGuardian:
                     self.termo_end_time_str = str(data.get("termo_end_time_str", ""))
                     self.termo_active_seconds_today = float(data.get("termo_active_seconds_today", 0.0))
                     self.doble_kwh_today = float(data.get("doble_kwh_today", 0.0))
+                    saved_off = data.get("ac_manual_off_time")
+                    if saved_off and (time.time() - float(saved_off) < 3600.0):
+                        self.ac_manual_off_time = float(saved_off)
+                    saved_on = data.get("ac_manual_on_time")
+                    if saved_on and (time.time() - float(saved_on) < 7200.0):
+                        self.ac_manual_on_time = float(saved_on)
                     log.info(f"💾 Recuperats acumulats previs d'avui ({self.current_day_str}): {self.solar_kwh_today:.2f} kWh solars, {self.consumption_kwh_today:.2f} kWh consum (Termo: {self.termo_kwh_today:.2f} kWh, Cuina: {self.doble_kwh_today:.2f} kWh).")
             except Exception as e:
                 log.warning(f"No s'han pogut carregar acumulats previs: {e}")
@@ -465,6 +486,8 @@ class CasetaGuardian:
             tmin = float(f"{tmin_m.group(1)}.{tmin_m.group(2)}") if tmin_m else None
 
             self.ext_temp = temp
+            self.ext_humidity = float(hum) if hum is not None else 50.0
+            self.rain_today = float(pluja) if pluja is not None else 0.0
             inforatge_data = {
                 "temperatura": temp,
                 "humitat": hum,
@@ -830,7 +853,7 @@ class CasetaGuardian:
     def update_ac_status(self):
         """Consulta l'estat real del comandament virtual de l'AC a Tuya Cloud cada 2 minuts (120s) amb token en memòria cau."""
         now = time.time()
-        if now - getattr(self, "last_ac_status_query_time", 0.0) < 120.0:
+        if now - getattr(self, "last_ac_status_query_time", 0.0) < 45.0:
             return
         self.last_ac_status_query_time = now
 
@@ -864,14 +887,66 @@ class CasetaGuardian:
                     mode_val = str(status_map.get("mode", "0"))
                     mode_str = "Fred" if mode_val in ("0", "cool") else "Auto"
                     
+                    prev_pwr = getattr(self, "ac_current_power", None)
+
+                    if prev_pwr is not None:
+                        # ✋ Detecció d'apagat manual per l'usuari (Tuya Smart / Smart Life / Comandament)
+                        if prev_pwr == 1 and pwr == 0:
+                            dt_guardian_off = now - getattr(self, "last_guardian_ac_power_off_time", 0.0)
+                            if dt_guardian_off > 45.0:
+                                self.ac_manual_off_time = now
+                                self.ac_manual_on_time = None
+                                fin_dt = get_madrid_now() + datetime.timedelta(seconds=3600)
+                                fin_str = fin_dt.strftime("%H:%M")
+                                log.info(f"✋ [CLIMA] Detectat apagat manual de l'AC per l'usuari (Tuya/App). Bloqueig d'encesa automàtica durant 60 minuts (fins a les {fin_str}h).")
+                                self.send_notification(
+                                    "✋ AC Apagat Manualment",
+                                    f"S'ha detectat l'apagat manual de l'aire condicionat. No es tornarà a encendre automàticament fins a les {fin_str}h (pausa d'1 hora).",
+                                    "default",
+                                    "hand"
+                                )
+                        elif prev_pwr == 0 and pwr == 1:
+                            dt_guardian_cmd = now - getattr(self, "last_ac_command_time", 0.0)
+                            if dt_guardian_cmd > 45.0:
+                                self.ac_manual_on_time = now
+                                log.info("▶️ [CLIMA] Detectada encesa manual de l'AC per l'usuari a Tuya/comandament. Prioritat manual activa (es mantindrà encès 2 hores).")
+                            if getattr(self, "ac_manual_off_time", None) is not None:
+                                log.info("▶️ [CLIMA] Cancel·lant la pausa d'apagat per encesa manual.")
+                                self.ac_manual_off_time = None
+                            self.ac_turned_off_by_free_cooling = False
+                            self.free_cooling_start_time = None
+                        elif prev_pwr == 1 and pwr == 1 and temp != self.ac_current_temp:
+                            dt_guardian_cmd = now - getattr(self, "last_ac_command_time", 0.0)
+                            if dt_guardian_cmd > 45.0:
+                                self.ac_manual_on_time = now
+                                log.info(f"🌡️ [CLIMA] Canvi manual de consigna a {temp}ºC per l'usuari. Prioritat manual estesa 2 hores.")
+                    
                     self.ac_current_power = pwr
                     self.ac_current_temp = temp
                     
+                    # Càlcul del motiu per a telemetria MQTT
+                    manual_on = bool(getattr(self, "ac_manual_on_time", None) and (now - self.ac_manual_on_time < 7200.0))
+                    manual_off = bool(getattr(self, "ac_manual_off_time", None) and (now - self.ac_manual_off_time < 3600.0))
+
+                    if pwr == 1:
+                        if manual_on:
+                            rem_on = int(round((7200.0 - (now - self.ac_manual_on_time)) / 60.0))
+                            reason_txt = f"Manual Usuari ({rem_on} min prioritat)"
+                        else:
+                            reason_txt = "Automàtic / Guardià"
+                    elif manual_off:
+                        rem_m = int(round((3600.0 - (now - self.ac_manual_off_time)) / 60.0))
+                        reason_txt = f"Pausa Manual Usuari ({rem_m} min restants)"
+                    else:
+                        reason_txt = "En Repòs"
+
                     ac_payload = {
                         "power": pwr,
                         "temp": temp,
-                        "mode": mode_str,
-                        "reason": "Comandament Tuya / App" if pwr == 1 else "En Repòs",
+                        "mode": mode_str if pwr == 1 else "Apagat",
+                        "reason": reason_txt,
+                        "manual_on": manual_on,
+                        "manual_off": manual_off,
                         "timestamp": now
                     }
                     if self.client:
@@ -929,6 +1004,7 @@ class CasetaGuardian:
             if power == 0:
                 res = send_sub_cmd("power", 0)
                 self.ac_current_power = 0
+                self.last_guardian_ac_power_off_time = now
                 mode_str = "Apagat"
                 log.info(f"❄️ [CLIMA AUTÒNOM] AC Power OFF ({reason}): {res}")
             elif getattr(self, "ac_current_power", 0) == 1:
@@ -973,7 +1049,28 @@ class CasetaGuardian:
                 self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI: Bateria <60% -> Apagat de l'AC")
                 self.send_notification("❄️ Escut SAI Clima", "Bateria <60%! S'ha apagat l'AC automàticament per protegir la reserva de bateria!", "default", "snowflake")
                 self.ac_turned_off_by_guardian = True
+                self.ac_manual_on_time = None
             return
+
+        # ✋ BLOQUEIG D'1 HORA PER APAGAT MANUAL DE L'USUARI (Tuya / App / Comandament)
+        if getattr(self, "ac_manual_off_time", None) is not None:
+            dt_manual = now - self.ac_manual_off_time
+            if dt_manual < 3600.0:
+                # L'usuari ha apagat l'AC manualment: respectem la seua decisió durant almenys 60 minuts!
+                return
+            else:
+                log.info("🕒 [CLIMA] Finalitzada la pausa de 60 minuts per apagat manual. Reprenent gestió climàtica automàtica.")
+                self.ac_manual_off_time = None
+
+        # 👑 PRIORITAT MANUAL D'ENCESA PER L'USUARI (2 hores)
+        user_manual_cooling = bool(getattr(self, "ac_manual_on_time", None) and (now - self.ac_manual_on_time < 7200.0))
+        if user_manual_cooling:
+            # Si l'usuari ha encès l'AC manualment, respectem completament la seua decisió i consigna:
+            # NO apliquem Free-Cooling ni forcem canvis automàtics de consigna si ja està en marxa!
+            if self.ac_current_power == 1:
+                return
+            else:
+                self.ac_manual_on_time = None
 
         # 🛡️ Histèresi Anti-Cicle: Si l'AC està apagat, NOMÉS s'encén automàticament si SoC >= 65.0%
         if self.ac_current_power == 0 and self.soc < 65.0:
@@ -992,39 +1089,56 @@ class CasetaGuardian:
         t2 = s2.get("temperatura")
         t_int = t2 if t2 is not None else (t1 if t1 is not None else 26.5)
         t_ext = self.ext_temp
+        hum_ext = getattr(self, "ext_humidity", 50.0)
+        pluja_avui = getattr(self, "rain_today", 0.0)
 
         # 🍃 LLEI 0: Free-Cooling Bioclimàtic Diferencial (Apagat d'AC si a fora fa fresca)
-        # Si T_ext < 25.5ºC I T_ext <= T_int - 1.5ºC (a fora fa clarament més fresca que a dins)
+        # Condicions de seguretat i confort:
+        # 1. Sense prioritat manual d'encesa
+        # 2. Sense pluja (pluja_avui == 0.0)
+        # 3. Humitat exterior continguda (hum_ext <= 75.0%)
+        # 4. Interior moderat (t_int < 27.0ºC) -> si a dins fa >=27ºC cal refrigeració activa!
+        # 5. Exterior fresc: T_ext < 24.5ºC I T_ext <= T_int - 2.0ºC
         free_cooling_condition = (
-            t_ext is not None
-            and t_ext < 25.5
-            and (t_ext <= t_int - 1.5 or t_ext < 23.0)
+            not user_manual_cooling
+            and pluja_avui == 0.0
+            and hum_ext <= 75.0
+            and t_int < 27.0
+            and t_ext is not None
+            and t_ext < 24.5
+            and t_ext <= t_int - 2.0
         )
 
         if free_cooling_condition:
             if self.free_cooling_start_time is None:
                 self.free_cooling_start_time = now
-                log.info(f"🍃 Iniciant compte enrere de 15 minuts de Free-Cooling (T_ext: {t_ext:.1f}ºC < 25.5ºC | T_int: {t_int:.1f}ºC | ΔT: {t_int - t_ext:.1f}ºC)...")
+                log.info(f"🍃 Iniciant compte enrere de 15 minuts de Free-Cooling (T_ext: {t_ext:.1f}ºC < 24.5ºC | T_int: {t_int:.1f}ºC | ΔT: {t_int - t_ext:.1f}ºC)...")
             elif now - self.free_cooling_start_time >= 900:
                 if self.ac_current_power != 0:
                     self.send_ac_tuya_command(
                         power=0,
-                        reason=f"🍃 Free-Cooling Diferencial: T_ext ({t_ext:.1f}ºC) <= T_int ({t_int:.1f}ºC) - 1.5ºC -> AC Apagat (Sense Notificació)"
+                        reason=f"🍃 Free-Cooling Diferencial: T_ext ({t_ext:.1f}ºC) <= T_int ({t_int:.1f}ºC) - 2.0ºC -> AC Apagat"
+                    )
+                    self.send_notification(
+                        "🍃 Free-Cooling Activat",
+                        f"L'AC s'ha apagat perquè a l'exterior fa fresca ({t_ext:.1f}ºC) i no plou. Obre finestres per aprofitar el refredament natural!",
+                        "low",
+                        "wind"
                     )
                     self.ac_turned_off_by_free_cooling = True
-                    log.info(f"🍃 Free-Cooling aplicat: AC apagat silenciadament per exterior fresc ({t_ext:.1f}ºC vs {t_int:.1f}ºC int).")
+                    log.info(f"🍃 Free-Cooling aplicat: AC apagat per exterior fresc ({t_ext:.1f}ºC vs {t_int:.1f}ºC int).")
+                self.free_cooling_start_time = None
                 return
         else:
             self.free_cooling_start_time = None
 
         # Si l'AC s'havia apagat per Free-Cooling, comprova si cal re-encendre:
         if self.ac_turned_off_by_free_cooling:
-            # Condicions de re-encesa: T_ext >= 26.5ºC O (T_int >= 29.5ºC I T_ext >= T_int - 0.5ºC)
-            if (t_ext is not None and t_ext >= 26.5) or (t_int >= 29.5 and (t_ext is None or t_ext >= t_int - 0.5)):
-                log.info(f"🔥 Finalitzant Free-Cooling (T_ext: {t_ext}ºC o T_int: {t_int:.1f}ºC). Re-activant climatització...")
+            # Condicions de restabliment: T_ext >= 25.5ºC O T_int >= 27.5ºC O pluja O humitat > 75% O prioritat manual
+            if (t_ext is not None and t_ext >= 25.5) or t_int >= 27.5 or pluja_avui > 0.0 or hum_ext > 75.0 or user_manual_cooling:
+                log.info(f"🔥 Finalitzant Free-Cooling (T_ext: {t_ext}ºC, T_int: {t_int:.1f}ºC, Hum: {hum_ext}%, Pluja: {pluja_avui}mm). Re-activant climatització...")
                 self.ac_turned_off_by_free_cooling = False
             else:
-                # Mantindre l'AC apagat mentre dure el Free-Cooling
                 return
 
         # ⚙️ LLEI 4: Protecció del Compressor i Anti-Flapping (mínim 10 minuts)
@@ -1149,10 +1263,10 @@ class CasetaGuardian:
         if termo_on and termo_p >= 500.0:
             now_madrid = get_madrid_now()
             time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
-            # 🌙 A. Franja Matinada Vall P3 (06:00h - 07:00h): Xarxa total per aprofitar tarifa barata (0.08 €/kWh)
-            if 6.0 <= time_decimal < 7.0:
+            # 🌙 A. Franja Matinada Vall P3 (04:00h - 06:30h): Xarxa total per aprofitar tarifa barata (0.08 €/kWh)
+            if 4.0 <= time_decimal < 6.5:
                 target = 1300.0
-                reason = f"🌙 Arbitratge Vall P3 (06h-07h) -> Setpoint 1300W (Tot de Xarxa Barata a 0.08 €/kWh)"
+                reason = "🌙 Arbitratge Vall P3 (Matinada) -> Setpoint 1300W (Tot de Xarxa Barata a 0.08 €/kWh)"
             else:
                 # ☀️ B. Termo Actiu Diürn: Blindatge de bateria a 800W (zero trompada)
                 target = 800.0
@@ -1258,6 +1372,8 @@ class CasetaGuardian:
             "termo_end_time_str": getattr(self, "termo_end_time_str", ""),
             "termo_active_seconds_today": round(getattr(self, "termo_active_seconds_today", 0.0), 0),
             "doble_kwh_today": round(getattr(self, "doble_kwh_today", 0.0), 2),
+            "ac_manual_off_time": getattr(self, "ac_manual_off_time", None),
+            "ac_manual_on_time": getattr(self, "ac_manual_on_time", None),
             "timestamp": time.time()
         }
         try:
@@ -1436,11 +1552,11 @@ class CasetaGuardian:
                 )
                 return
 
-            # 3. Fi de la Finestra Matinal P3 (passades les 06:30h sense tall)
-            if 6.5 <= time_decimal < 8.0 and not (9.0 <= time_decimal < 16.0):
+            # 3. Fi de la Finestra Matinal (passades les 06:30h per evitar càrregues coincidents amb esmorzar a les 06:45h)
+            if 6.5 <= time_decimal < 9.0:
                 self.send_termo_tuya_command(
                     power=False,
-                    reason="🕒 Fi Finestra Matinada P3 (06:30h): Apagat preventiu per recarregar bateria abans de les 08h"
+                    reason="🕒 Fi Finestra Matinada (06:30h): Apagat preventiu abans de l'esmorzar (cafetera/microones)"
                 )
                 return
 
@@ -1455,9 +1571,11 @@ class CasetaGuardian:
         # Si el termo està apagat i encara no ha completat la càrrega d'avui:
         elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
             today_est = getattr(self, "today_kwh_est", 5.0)
+            urgent_heating = (getattr(self, "termo_est_temp", 60.0) < 42.0) or (getattr(self, "termo_status", {}).get("days_since_60", 0) or 0) >= 2
 
-            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:30h a 06:00h) amb xarxa sana i bateria alta (>=85%)
-            if 4.5 <= time_decimal < 6.0 and grid_present and self.soc >= 85.0:
+            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:30h) amb xarxa sana i bateria recuperant-se (>=70% o rescat >=65%)
+            soc_ok_matinada = (self.soc >= 70.0) or (urgent_heating and self.soc >= 65.0)
+            if 4.0 <= time_decimal < 6.5 and grid_present and soc_ok_matinada:
                 # Pre-rampa D-Bus a 800W per evitar descàrrega brusca de bateria
                 try:
                     import dbus
@@ -1469,20 +1587,22 @@ class CasetaGuardian:
                 except Exception as e:
                     log.debug(f"Error pre-rampa D-Bus: {e}")
 
+                motiu_extra = " [Rescat Aigua Freda/Antillegionel·la]" if urgent_heating else ""
                 self.send_termo_tuya_command(
                     power=True,
-                    reason=f"🌙 Matinada Vall P3 (04:30h): Encesa a 0.08 €/kWh amb Xarxa Activa ({self.grid_v:.0f}V) i Bateria {self.soc:.0f}%"
+                    reason=f"🌙 Matinada Vall P3{motiu_extra} ({now_madrid.strftime('%H:%M')}h): Encesa a 0.08 €/kWh amb Xarxa Activa ({self.grid_v:.0f}V) i Bateria {self.soc:.0f}%"
                 )
                 self.send_notification(
-                    "🌙 Termo Engegat a les 04:30h (Vall P3)",
+                    f"🌙 Termo Engegat a la Matinada (Vall P3){motiu_extra}",
                     f"Calfant aigua a 60ºC en horari super-econòmic (0.08 €/kWh). Xarxa activa ({self.grid_v:.0f}V) i bateria al {self.soc:.0f}%!",
                     "default",
                     "moon"
                 )
                 return
 
-            # ☀️ CAS B: Excedents Solars Diürns (09:30h - 16:00h): SoC >= 80.0% i Sol Huawei >= 500W
-            if 9.0 <= time_decimal < 16.0 and self.soc >= 80.0 and self.pv_p >= 500.0:
+            # ☀️ CAS B: Excedents Solars Diürns (09:00h - 16:00h): SoC >= 80.0% i Sol Huawei >= 500W (o Bateria Plena >=88% si rescat)
+            soc_ok_diurn = (self.soc >= 80.0 and self.pv_p >= 500.0) or (urgent_heating and self.soc >= 88.0 and self.pv_p >= 150.0)
+            if 9.0 <= time_decimal < 16.0 and soc_ok_diurn:
                 if today_est >= 5.0:
                     pre_target = 200.0
                 elif today_est >= 3.5:
@@ -1500,9 +1620,10 @@ class CasetaGuardian:
                 except Exception as e:
                     log.warning(f"Error establint pre-rampa a D-Bus: {e}")
 
+                motiu_b = f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 80% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo" if self.pv_p >= 500.0 else f"☀️ Rescat Diürn Bateria Plena: SoC {self.soc:.1f}% i Sol {self.pv_p:.0f}W -> Encesa Termo"
                 self.send_termo_tuya_command(
                     power=True,
-                    reason=f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 80% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo"
+                    reason=motiu_b
                 )
                 self.send_notification(
                     "♨️ Termo Engegat per Excedents Solars",
@@ -1637,31 +1758,124 @@ class CasetaGuardian:
             else:
                 self.export_start_time = None
 
+    def poll_dbus_telemetry(self):
+        """Lectura directa de telemetria des de D-Bus a Cerbo GX (independent de keepalive MQTT)."""
+        now = time.time()
+        if now - getattr(self, "last_dbus_poll_time", 0.0) < 5.0:
+            return
+        self.last_dbus_poll_time = now
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            # 1. Bateria SoC, Tensió, Corrent i Potència
+            try:
+                soc_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Soc").GetValue()
+                if soc_val is not None:
+                    self.soc = float(soc_val)
+            except Exception:
+                pass
+            try:
+                v_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Voltage").GetValue()
+                if v_val is not None:
+                    self.bat_v = float(v_val)
+            except Exception:
+                pass
+            try:
+                i_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Current").GetValue()
+                if i_val is not None:
+                    self.bat_i = float(i_val)
+            except Exception:
+                pass
+            try:
+                p_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Power").GetValue()
+                if p_val is not None:
+                    self.bat_p = float(p_val)
+            except Exception:
+                pass
+            # 2. Xarxa Tensió i Potència
+            try:
+                grid_v = bus.get_object("com.victronenergy.vebus.ttyS4", "/Ac/ActiveIn/L1/V").GetValue()
+                if grid_v is not None:
+                    self.grid_v = float(grid_v)
+            except Exception:
+                pass
+            try:
+                grid_p = bus.get_object("com.victronenergy.system", "/Ac/Grid/L1/Power").GetValue()
+                if grid_p is not None:
+                    self.grid_p = float(grid_p)
+            except Exception:
+                pass
+            # 3. Consum de la Caseta
+            try:
+                ac_l = bus.get_object("com.victronenergy.system", "/Ac/Consumption/L1/Power").GetValue()
+                if ac_l is not None:
+                    self.ac_loads = float(ac_l)
+            except Exception:
+                pass
+            # 4. Sol Generat (Inversor Huawei en AC-Out)
+            try:
+                pv = bus.get_object("com.victronenergy.system", "/Ac/PvOnOutput/L1/Power").GetValue()
+                if pv is not None:
+                    pv_f = float(pv)
+                    self.pv_p = 0.0 if (-25.0 <= pv_f <= 20.0) else pv_f
+            except Exception:
+                pass
+            # 5. Cel·les Pylontech i SOH
+            try:
+                bms_bus = bus.get_object("com.victronenergy.battery.socketcan_can1", "/System/MaxCellVoltage")
+                c_max = bms_bus.GetValue()
+                c_min = bus.get_object("com.victronenergy.battery.socketcan_can1", "/System/MinCellVoltage").GetValue()
+                if c_max is not None and c_min is not None:
+                    self.cell_max = float(c_max)
+                    self.cell_min = float(c_min)
+                    delta_mv = (self.cell_max - self.cell_min) * 1000.0
+                    if delta_mv > self.max_cell_delta_today:
+                        self.max_cell_delta_today = delta_mv
+            except Exception:
+                pass
+            try:
+                soh_val = bus.get_object("com.victronenergy.battery.socketcan_can1", "/Soh").GetValue()
+                if soh_val is not None:
+                    self.soh = float(soh_val)
+            except Exception:
+                pass
+            # 6. Mode MultiPlus
+            try:
+                mode_val = bus.get_object("com.victronenergy.vebus.ttyS4", "/Mode").GetValue()
+                if mode_val is not None:
+                    self.vebus_mode = int(mode_val)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def on_mqtt_message(self, client, userdata, msg):
         try:
             parts = msg.topic.split("/")
-            if len(parts) > 1 and parts[1] not in ("+", "#"):
+            # Blindatge del Portal ID: només actualitzar si és un missatge de telemetria N/ de 12 caràcters hexadecimals
+            if parts[0] == "N" and len(parts) > 1 and len(parts[1]) == 12:
                 self.portal_id = parts[1]
                 
-            val = json.loads(msg.payload.decode()).get("value")
+            raw_payload = json.loads(msg.payload.decode())
+            val = raw_payload.get("value") if isinstance(raw_payload, dict) else raw_payload
             topic = msg.topic
             
-            if topic.endswith("/battery/512/Soc"):
+            if topic.endswith("/battery/512/Soc") or topic.endswith("/system/0/Dc/Battery/Soc"):
                 self.soc = float(val) if val is not None else self.soc
-            elif topic.endswith("/battery/512/Soh"):
+            elif topic.endswith("/battery/512/Soh") or topic.endswith("/system/0/Dc/Battery/Soh"):
                 self.soh = float(val) if val is not None else self.soh
-            elif topic.endswith("/battery/512/Dc/0/Voltage"):
+            elif topic.endswith("/battery/512/Dc/0/Voltage") or topic.endswith("/system/0/Dc/Battery/Voltage"):
                 self.bat_v = float(val) if val is not None else self.bat_v
-            elif topic.endswith("/battery/512/Dc/0/Current"):
+            elif topic.endswith("/battery/512/Dc/0/Current") or topic.endswith("/system/0/Dc/Battery/Current"):
                 self.bat_i = float(val) if val is not None else self.bat_i
-            elif topic.endswith("/battery/512/Dc/0/Power"):
+            elif topic.endswith("/battery/512/Dc/0/Power") or topic.endswith("/system/0/Dc/Battery/Power"):
                 self.bat_p = float(val) if val is not None else self.bat_p
             elif topic.endswith("/battery/512/System/MaxCellVoltage"):
                 self.cell_max = float(val) if val is not None else self.cell_max
             elif topic.endswith("/battery/512/System/MinCellVoltage"):
                 self.cell_min = float(val) if val is not None else self.cell_min
                 
-            elif topic.endswith("/pvinverter/31/Ac/Power") or topic.endswith("/pvinverter/31/Ac/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/Power"):
+            elif ("/pvinverter/" in topic and topic.endswith("/Ac/Power")) or topic.endswith("/pvinverter/31/Ac/Power") or topic.endswith("/system/0/Ac/PvOnOutput/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/Power") or topic.endswith("/system/0/Dc/Pv/Power"):
                 raw_pv = float(val) if val is not None else self.pv_p
                 # Filtre de soroll d'inversor Huawei en repòs: entre -25W i +20W és 0W real
                 if -25.0 <= raw_pv <= 20.0:
@@ -1678,8 +1892,9 @@ class CasetaGuardian:
                 self.vebus_mode = int(val) if val is not None else self.vebus_mode
             elif topic.endswith("/vebus/276/VebusChargeState"):
                 self.vebus_state = int(val) if val is not None else self.vebus_state
-            elif "caseta/clima" in topic and isinstance(val, dict):
-                self.clima_sensors = val.get("sensors") or {}
+            elif "caseta/clima" in topic:
+                clima_dict = val if (isinstance(val, dict) and "sensors" in val) else (raw_payload if isinstance(raw_payload, dict) else {})
+                self.clima_sensors = clima_dict.get("sensors") or {}
                 s2 = self.clima_sensors.get("sensor_2") or {}
                 if s2.get("presencia"):
                     self.last_presence_seen_time = time.time()
@@ -1742,6 +1957,7 @@ class CasetaGuardian:
                 self.update_termo_status()
                 self.update_doble_status()
                 self.update_energy_integrals(now_madrid)
+                self.poll_dbus_telemetry()
                 self.evaluate_state_machine(now_madrid)
                 self.evaluate_climate_control(now_madrid)
                 
