@@ -1263,14 +1263,14 @@ class CasetaGuardian:
         if termo_on and termo_p >= 500.0:
             now_madrid = get_madrid_now()
             time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
-            # 🌙 A. Franja Matinada Vall P3 (04:00h - 06:30h): Xarxa total per aprofitar tarifa barata (0.08 €/kWh)
+            # 🌙 A. Franja Matinada Vall P3 (04:00h - 06:30h): Màxim suport de xarxa respectant els 5A contractats (800W / ~3.5A)
             if 4.0 <= time_decimal < 6.5:
-                target = 1300.0
-                reason = "🌙 Arbitratge Vall P3 (Matinada) -> Setpoint 1300W (Tot de Xarxa Barata a 0.08 €/kWh)"
+                target = 800.0
+                reason = "🌙 Suport Vall P3 (Matinada) -> Setpoint 800W (Límit segur 5A contractats)"
             else:
                 # ☀️ B. Termo Actiu Diürn: Blindatge de bateria a 800W (zero trompada)
                 target = 800.0
-                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W (Blindatge Total Bateria - Zero Trompada)"
+                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W (Blindatge Total Bateria - Límit 5A)"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
