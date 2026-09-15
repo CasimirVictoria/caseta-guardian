@@ -1042,131 +1042,15 @@ class CasetaGuardian:
     def evaluate_climate_control(self, now_madrid):
         """Avalua les Lleis de Climatització Intel·ligent de la Caseta."""
         now = time.time()
-        
-        # 🚨 LLEI 1: Escut SAI & Seguretat Bateria (Bateria <60%)
-        if 0 < self.soc < 60.0:
-            if self.ac_current_power != 0:
-                self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI: Bateria <60% -> Apagat de l'AC")
-                self.send_notification("❄️ Escut SAI Clima", "Bateria <60%! S'ha apagat l'AC automàticament per protegir la reserva de bateria!", "default", "snowflake")
-                self.ac_turned_off_by_guardian = True
-                self.ac_manual_on_time = None
-            return
 
-        # ✋ BLOQUEIG D'1 HORA PER APAGAT MANUAL DE L'USUARI (Tuya / App / Comandament)
-        if getattr(self, "ac_manual_off_time", None) is not None:
-            dt_manual = now - self.ac_manual_off_time
-            if dt_manual < 3600.0:
-                # L'usuari ha apagat l'AC manualment: respectem la seua decisió durant almenys 60 minuts!
-                return
-            else:
-                log.info("🕒 [CLIMA] Finalitzada la pausa de 60 minuts per apagat manual. Reprenent gestió climàtica automàtica.")
-                self.ac_manual_off_time = None
-
-        # 👑 PRIORITAT MANUAL D'ENCESA PER L'USUARI (2 hores)
-        user_manual_cooling = bool(getattr(self, "ac_manual_on_time", None) and (now - self.ac_manual_on_time < 7200.0))
-        if user_manual_cooling:
-            # Si l'usuari ha encès l'AC manualment, respectem completament la seua decisió i consigna:
-            # NO apliquem Free-Cooling ni forcem canvis automàtics de consigna si ja està en marxa!
-            if self.ac_current_power == 1:
-                return
-            else:
-                self.ac_manual_on_time = None
-
-        # 🛡️ Histèresi Anti-Cicle: Si l'AC està apagat, NOMÉS s'encén automàticament si SoC >= 65.0%
-        if self.ac_current_power == 0 and self.soc < 65.0:
-            return
-
-        # Si l'AC estava apagat pel Guardià i la bateria ja ha superat el 65%, restablim automàticament
-        if self.soc >= 65.0 and self.ac_turned_off_by_guardian and self.ac_current_power == 0:
-            log.info(f"🔄 Bateria recuperada ({self.soc:.1f}% >= 65%). Restablint AC automàticament...")
-            self.send_notification("❄️ Restabliment Climatització", f"Bateria recuperada ({self.soc:.1f}% >= 65%)! S'ha reprès l'AC automàticament.", "default", "snowflake")
-            self.ac_turned_off_by_guardian = False
-
-        # Lectures de temperatura interior (Zigbee) i exterior (Inforatge)
-        s1 = self.clima_sensors.get("sensor_1", {}) if self.clima_sensors else {}
-        s2 = self.clima_sensors.get("sensor_2", {}) if self.clima_sensors else {}
-        t1 = s1.get("temperatura")
-        t2 = s2.get("temperatura")
-        t_int = t2 if t2 is not None else (t1 if t1 is not None else 26.5)
-        t_ext = self.ext_temp
-        hum_ext = getattr(self, "ext_humidity", 50.0)
-        pluja_avui = getattr(self, "rain_today", 0.0)
-
-        # 🍃 LLEI 0: Free-Cooling Bioclimàtic Diferencial (Apagat d'AC si a fora fa fresca)
-        # Condicions de seguretat i confort:
-        # 1. Sense prioritat manual d'encesa
-        # 2. Sense pluja (pluja_avui == 0.0)
-        # 3. Humitat exterior continguda (hum_ext <= 75.0%)
-        # 4. Interior moderat (t_int < 27.0ºC) -> si a dins fa >=27ºC cal refrigeració activa!
-        # 5. Exterior fresc: T_ext < 24.5ºC I T_ext <= T_int - 2.0ºC
-        free_cooling_condition = (
-            not user_manual_cooling
-            and pluja_avui == 0.0
-            and hum_ext <= 75.0
-            and t_int < 27.0
-            and t_ext is not None
-            and t_ext < 24.5
-            and t_ext <= t_int - 2.0
-        )
-
-        if free_cooling_condition:
-            if self.free_cooling_start_time is None:
-                self.free_cooling_start_time = now
-                log.info(f"🍃 Iniciant compte enrere de 15 minuts de Free-Cooling (T_ext: {t_ext:.1f}ºC < 24.5ºC | T_int: {t_int:.1f}ºC | ΔT: {t_int - t_ext:.1f}ºC)...")
-            elif now - self.free_cooling_start_time >= 900:
-                if self.ac_current_power != 0:
-                    self.send_ac_tuya_command(
-                        power=0,
-                        reason=f"🍃 Free-Cooling Diferencial: T_ext ({t_ext:.1f}ºC) <= T_int ({t_int:.1f}ºC) - 2.0ºC -> AC Apagat"
-                    )
-                    self.send_notification(
-                        "🍃 Free-Cooling Activat",
-                        f"L'AC s'ha apagat perquè a l'exterior fa fresca ({t_ext:.1f}ºC) i no plou. Obre finestres per aprofitar el refredament natural!",
-                        "low",
-                        "wind"
-                    )
-                    self.ac_turned_off_by_free_cooling = True
-                    log.info(f"🍃 Free-Cooling aplicat: AC apagat per exterior fresc ({t_ext:.1f}ºC vs {t_int:.1f}ºC int).")
-                self.free_cooling_start_time = None
-                return
-        else:
-            self.free_cooling_start_time = None
-
-        # Si l'AC s'havia apagat per Free-Cooling, comprova si cal re-encendre:
-        if self.ac_turned_off_by_free_cooling:
-            # Condicions de restabliment: T_ext >= 25.5ºC O T_int >= 27.5ºC O pluja O humitat > 75% O prioritat manual
-            if (t_ext is not None and t_ext >= 25.5) or t_int >= 27.5 or pluja_avui > 0.0 or hum_ext > 75.0 or user_manual_cooling:
-                log.info(f"🔥 Finalitzant Free-Cooling (T_ext: {t_ext}ºC, T_int: {t_int:.1f}ºC, Hum: {hum_ext}%, Pluja: {pluja_avui}mm). Re-activant climatització...")
-                self.ac_turned_off_by_free_cooling = False
-            else:
-                return
-
-        # ⚙️ LLEI 4: Protecció del Compressor i Anti-Flapping (mínim 10 minuts)
-        if now - self.last_ac_command_time < 600:
-            return
-
-        hour = now_madrid.hour
-        
-        # 🌙 LLEI 2.1: Horari Nocturn (23:00 - 07:59h): Confort suau de descans a 26.5ºC
-        if hour >= 23 or hour < 8:
-            if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🌙 Horari Nocturn: Descans a 26.5ºC (Ventilador Auto)")
-            return
-
-        # ☀️ LLEI 3: Confort Bioclimàtic Estable Diürn (26.0ºC Permanent)
-        # La bateria mateixa absorbeix tot el sol de migdia gràcies al Vas Buit creat pel termo!
-        if self.soc >= 69.0:
-            if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason=f"🏰 Confort Diürn Estable a 26.0ºC (SoC {self.soc:.1f}%)")
-        else:
-            # Bateria Baixa (<69%) I repòs >30 min -> Mode Eco 28ºC per protegir el coixí
-            time_since_presence = now - self.last_presence_seen_time
-            if time_since_presence > 1800:
-                if self.ac_current_power != 1 or self.ac_current_temp != 28:
-                    self.send_ac_tuya_command(power=1, temp=28, mode=0, fan=0, reason="🟢 Repòs >30 min i Bateria <69% (Mode Eco 28ºC)")
-            else:
-                if self.ac_current_power != 1 or self.ac_current_temp != 26:
-                    self.send_ac_tuya_command(power=1, temp=26, mode=0, fan=0, reason="🚶 Presència activa (Confort 26ºC)")
+        # 🍂 Climatització Automàtica Desactivada (Temporada suau de tardor/hivern)
+        # S'han cancel·lat totes les enceses automàtiques (diürnes i nocturnes).
+        # Només es manté l'Escut SAI de seguretat per si l'usuari encén l'AC manualment i la bateria baixa del 60%.
+        if 0 < self.soc < 60.0 and getattr(self, "ac_current_power", 0) != 0:
+            self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI: Bateria <60% -> Apagat de l'AC")
+            self.send_notification("❄️ Escut SAI Clima", "Bateria <60%! S'ha apagat l'AC automàticament per protegir la reserva de bateria!", "default", "snowflake")
+            self.ac_turned_off_by_guardian = True
+        return
 
     def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
