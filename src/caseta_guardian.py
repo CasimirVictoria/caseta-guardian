@@ -15,16 +15,14 @@ Funcions principals:
 
 import csv
 import datetime
-import hashlib
-import hmac
 import json
 import logging
 import os
 import re
-import ssl
 import sys
 import time
 import urllib.request
+
 try:
     import zoneinfo
     MADRID_TZ = zoneinfo.ZoneInfo("Europe/Madrid")
@@ -37,14 +35,30 @@ except ImportError:
     print("Error: paho-mqtt no està instal·lat. Instal·la'l amb 'uv pip install paho-mqtt'")
     sys.exit(1)
 
+# Imports dels mòduls
+from caseta_guardian_modules.config import (
+    load_config, require_config,
+    TOTAL_NOMINAL_KWH, BATTERY_SOH_FACTOR, NET_CAPACITY_KWH,
+    P1_RATE, P2_RATE, P3_RATE, POTENCIA_FIXED_DAY, TAX_MULTIPLIER
+)
+from caseta_guardian_modules.notifications import NotificationManager
+from caseta_guardian_modules.tuya_manager import TuyaManager
+from caseta_guardian_modules.energy_forecast import EnergyForecast
+from caseta_guardian_modules.state_machine import StateMachine
+from caseta_guardian_modules.mqtt_client import MQTTClient
+from caseta_guardian_modules.dbus_telemetry import DBusTelemetry
+
+
 def get_madrid_now() -> datetime.datetime:
     """Retorna la data i hora exacta a la zona horària oficial de València/Madrid (peninsular)."""
     if MADRID_TZ:
         return datetime.datetime.now(MADRID_TZ)
     return datetime.datetime.now()
 
+
 def madrid_log_timetuple(*args):
     return get_madrid_now().timetuple()
+
 
 logging.Formatter.converter = madrid_log_timetuple
 
@@ -54,6 +68,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger("caseta-guardian")
+
 
 def get_easter_date(year: int) -> datetime.date:
     """Calcula el Diumenge de Pasqua amb l'algorisme de Butcher/Gauss."""
@@ -73,49 +88,28 @@ def get_easter_date(year: int) -> datetime.date:
     day = ((h + l - 7 * m + 114) % 31) + 1
     return datetime.date(year, month, day)
 
-CONFIG_PATHS = [
-    "/data/caseta-guardian/config.json",
-    os.path.expanduser("~/.config/caseta/config.json"),
-    os.path.expanduser("~/.config/caseta-guardian/config.json"),
-    os.path.join(os.path.dirname(__file__), "..", "config.json")
-]
-
-def load_config() -> dict:
-    for p in CONFIG_PATHS:
-        if os.path.exists(p):
-            try:
-                with open(p, "r") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-    return {}
 
 config = load_config()
 
 CERBO_IP = os.environ.get("CERBO_IP", config.get("cerbo_ip", "127.0.0.1" if os.path.exists("/opt/victronenergy") else "192.168.1.106"))
 PORTAL_ID = os.environ.get("PORTAL_ID", config.get("portal_id", "48e7da8782fd"))
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", config.get("ntfy_topic", "caseta_ador_alerts"))
-TUYA_S06_IP = os.environ.get("TUYA_S06_IP", config.get("tuya_s06_ip", "192.168.1.135"))
 HISTORY_CSV_FILE = os.path.expanduser("~/.local/share/caseta-guardian/historic_diari.csv")
 
-# Constants de bateria
-TOTAL_NOMINAL_KWH = 3.552
-BATTERY_SOH_FACTOR = 0.90
-NET_CAPACITY_KWH = TOTAL_NOMINAL_KWH * BATTERY_SOH_FACTOR
-
-# Tarifes 2.0TD Imagina Energía
-P1_RATE = 0.177691
-P2_RATE = 0.103870
-P3_RATE = 0.069473
-POTENCIA_FIXED_DAY = 0.170
-TAX_MULTIPLIER = 1.1418
 
 class CasetaGuardian:
     def __init__(self):
         self.portal_id = PORTAL_ID
-        self.client = None
         self.running = True
-        
+
+        # Inicialització dels mòduls
+        self.notifications = NotificationManager(NTFY_TOPIC)
+        self.tuya = TuyaManager(config)
+        self.forecast = EnergyForecast(config)
+        self.state_machine = StateMachine(self.tuya, self.notifications)
+        self.mqtt_client = MQTTClient(CERBO_IP, PORTAL_ID)
+        self.dbus_telemetry = DBusTelemetry()
+
         # Telemetria en directe
         self.soc = 0.0
         self.soh = 90.0
@@ -125,28 +119,25 @@ class CasetaGuardian:
         self.cell_max = 0.0
         self.cell_min = 0.0
         self.max_cell_delta_today = 0.0
-        
+
         self.pv_p = 0.0
         self.ac_loads = 0.0
         self.grid_p = 0.0
         self.grid_v = 220.0
         self.vebus_mode = 3
         self.vebus_state = 3
-        
+
         # Comptadors i temporitzadors
         self.export_start_time = None
         self.high_discharge_start_time = None
         self.low_voltage_start_time = None
         self.last_mode_switch_time = 0.0
-        self.last_forecast_time = 0.0
         self.last_inforatge_time = 0.0
         self.last_stats_calc_time = 0.0
         self.last_stats_publish_time = 0.0
-        self.last_keepalive_time = 0.0
         self.last_applied_min_soc = None
         self.last_soc_eval_time = 0.0
-        self.last_dbus_poll_time = 0.0
-        
+
         # Previsió Open-Meteo
         self.today_kwh_est = 5.0
         self.remaining_kwh_today = 3.0
@@ -155,7 +146,7 @@ class CasetaGuardian:
         self.sunset_temp_today = 26.0
         self.blackout_risk = 0
         self.target_reserve_soc = 85.0
-        
+
         self.current_day_str = get_madrid_now().strftime("%Y-%m-%d")
         self.is_holiday = self.check_is_holiday_or_weekend()
         self.solar_kwh_today = 0.0
@@ -169,7 +160,7 @@ class CasetaGuardian:
         self.mode2_time_seconds = 0.0
         self.relay_switch_count = 0
         self.tuya_ac_turned_off_today = False
-        
+
         # Climatització Autònoma (4 Lleis)
         self.last_ac_command_time = 0.0
         self.last_presence_seen_time = time.time()
@@ -185,7 +176,7 @@ class CasetaGuardian:
         self.ext_humidity = 50.0
         self.rain_today = 0.0
         self.clima_sensors = {}
-        
+
         # Termo Elèctric (Tuya Plug / LocalTuya)
         self.last_termo_update_time = 0.0
         self.termo_status = {}
@@ -197,9 +188,10 @@ class CasetaGuardian:
         self.termo_active_seconds_today = 0.0
         self.termo_currently_heating = False
         self.termo_last_heated_date = "2026-08-28"
+        self.termo_last_60_ts = None
         self.termo_est_temp = 60.0
         self.last_termo_calc_time = time.time()
-        
+
         # Recuperació d'estat persistent a disc
         try:
             p_file = "/data/caseta-guardian/caseta_daily_stats.json" if os.path.exists("/data/caseta-guardian") else "/tmp/caseta_daily_stats.json"
@@ -207,27 +199,39 @@ class CasetaGuardian:
                 with open(p_file, "r") as _f:
                     _d = json.load(_f)
                     self.termo_last_heated_date = _d.get("termo_last_heated_date", "2026-08-28")
+                    self.termo_last_60_ts = _d.get("termo_last_60_ts")
                     self.termo_est_temp = float(_d.get("termo_est_temp", 60.0))
+                    if self.termo_last_60_ts is None and _d.get("termo_heated_today") and _d.get("termo_end_time_str"):
+                        try:
+                            _d_str = _d.get("date", self.current_day_str)
+                            _e_str = _d.get("termo_end_time_str")
+                            _dt = datetime.datetime.strptime(f"{_d_str} {_e_str}", "%Y-%m-%d %H:%M")
+                            if MADRID_TZ:
+                                self.termo_last_60_ts = _dt.replace(tzinfo=MADRID_TZ).timestamp()
+                            else:
+                                self.termo_last_60_ts = _dt.timestamp()
+                        except Exception:
+                            pass
         except Exception:
             pass
-        
+
         # Endoll Doble Cuina (LocalTuya: Microones/Torradora + Cafetera)
         self.doble_status = {}
         self.doble_kwh_today = 0.0
         self.last_doble_update_time = 0.0
         self.last_doble_calc_time = time.time()
-        
+
         # Protecció de Corrent i C-rate de Bateria
         self.c1_discharge_start_time = None
         self.c05_discharge_start_time = None
-        
+
         # Grid Setpoint Dinàmic (Victron ESS)
         self.last_grid_setpoint = None
         self.last_grid_setpoint_eval_time = 0.0
-        
+
         # Checkpoint de seguretat diari a disc (cada 30 minuts)
         self.last_checkpoint_save_time = time.time()
-        
+
         os.makedirs(os.path.dirname(HISTORY_CSV_FILE), exist_ok=True)
         self.init_history_csv()
         self.load_daily_stats()
@@ -247,7 +251,7 @@ class CasetaGuardian:
             now = get_madrid_now()
         if now.weekday() in (5, 6):
             return True
-            
+
         y, m, d = now.year, now.month, now.day
         fixed_holidays = [
             (1, 1), (1, 6), (3, 19), (5, 1), (6, 24), (8, 15),
@@ -255,15 +259,15 @@ class CasetaGuardian:
         ]
         if (m, d) in fixed_holidays:
             return True
-            
+
         easter = get_easter_date(y)
         good_friday = easter - datetime.timedelta(days=2)
         easter_monday = easter + datetime.timedelta(days=1)
-        
+
         today_date = now.date()
         if today_date in (good_friday, easter_monday):
             return True
-            
+
         return False
 
     def load_daily_stats(self):
@@ -286,10 +290,22 @@ class CasetaGuardian:
                     self.p2_kwh_today = float(data.get("p2_kwh_today", 0.0))
                     self.p3_kwh_today = float(data.get("p3_kwh_today", 0.0))
                     self.termo_heated_today = bool(data.get("termo_heated_today", False))
+                    self.termo_last_heated_date = str(data.get("termo_last_heated_date", getattr(self, "termo_last_heated_date", "2026-09-28")))
+                    self.termo_last_60_ts = data.get("termo_last_60_ts", getattr(self, "termo_last_60_ts", None))
+                    self.termo_est_temp = float(data.get("termo_est_temp", getattr(self, "termo_est_temp", 60.0)))
                     self.termo_kwh_today = float(data.get("termo_kwh_today", 0.0))
                     self.termo_start_time_str = str(data.get("termo_start_time_str", ""))
                     self.termo_end_time_str = str(data.get("termo_end_time_str", ""))
                     self.termo_active_seconds_today = float(data.get("termo_active_seconds_today", 0.0))
+                    if self.termo_last_60_ts is None and self.termo_heated_today and self.termo_end_time_str:
+                        try:
+                            end_dt = datetime.datetime.strptime(f"{self.current_day_str} {self.termo_end_time_str}", "%Y-%m-%d %H:%M")
+                            if MADRID_TZ:
+                                self.termo_last_60_ts = end_dt.replace(tzinfo=MADRID_TZ).timestamp()
+                            else:
+                                self.termo_last_60_ts = end_dt.timestamp()
+                        except Exception:
+                            pass
                     self.doble_kwh_today = float(data.get("doble_kwh_today", 0.0))
                     saved_off = data.get("ac_manual_off_time")
                     if saved_off and (time.time() - float(saved_off) < 3600.0):
@@ -319,7 +335,7 @@ class CasetaGuardian:
             cov = (self.solar_kwh_today / max(0.01, self.consumption_kwh_today)) * 100.0
             cost = self.calculate_today_cost()
             is_hol = "SI" if self.is_holiday else "NO"
-            
+
             with open(HISTORY_CSV_FILE, "a", newline="") as f:
                 w = csv.writer(f)
                 w.writerow([
@@ -340,122 +356,12 @@ class CasetaGuardian:
         except Exception as e:
             log.error(f"Error registrant històric permanent diari: {e}")
 
-    def send_notification(self, title: str, message: str, priority: str = "default", tags: str = "zap"):
-        # 🌙 0. MODE NO MOLESTAR NOCTURN (23:00h a 08:00h Madrid)
-        # Silenci absolut al mòbil: zero notificacions rutinàries, de termo o xarxa mentre dorms!
-        now_madrid = get_madrid_now()
-        if (now_madrid.hour >= 23 or now_madrid.hour < 8) and priority != "emergency":
-            log.info(f"🌙 [SILENCI NOCTURN DND 23h-08h] Notificació silenciada: {title}")
-            return
-
-        # 🔕 1. Silenci d'arrencada: Durant els primers 60 segons, silenciar notificacions rutinàries
-        now = time.time()
-        if hasattr(self, "daemon_start_time") and (now - self.daemon_start_time < 60):
-            if priority not in ("urgent", "high", "5", "4", "emergency"):
-                log.info(f"🔕 [SILENCI D'ARRENCADA] Notificació rutinària silenciada: {title}")
-                return
-
-        # 🔕 2. Filtre anti-repetició (Deduplicació en menys de 10 minuts per a no-crítiques)
-        dedup_key = f"{title}_{message[:30]}"
-        if not hasattr(self, "_notif_history"):
-            self._notif_history = {}
-        last_sent = self._notif_history.get(dedup_key, 0.0)
-        if (now - last_sent < 600) and priority not in ("urgent", "high", "5", "4"):
-            return
-        self._notif_history[dedup_key] = now
-
-        try:
-            url = f"https://ntfy.sh/{NTFY_TOPIC}"
-            data = message.encode("utf-8")
-            req = urllib.request.Request(url, data=data, method="POST")
-            clean_title = title.encode('ascii', 'ignore').decode('ascii').strip() or "Caseta Guardian"
-            req.add_header("Title", clean_title)
-            req.add_header("Priority", priority)
-            req.add_header("Tags", tags)
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status == 200:
-                    log.info(f"📱 Notificació enviada al mòbil: {title}")
-        except Exception as e:
-            log.warning(f"No s'ha pogut enviar notificació ntfy: {e}")
-
-    def update_energy_forecast(self):
-        """Consulta Open-Meteo per estimar radiació solar i temperatura màxima (cada 60 minuts)."""
-        now = time.time()
-        if now - self.last_forecast_time < 3600:
-            return
-            
-        self.last_forecast_time = now
-        try:
-            cfg = load_config()
-            lat = cfg.get("latitude", 38.9)
-            lon = cfg.get("longitude", -0.2)
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=shortwave_radiation_sum,temperature_2m_max&hourly=direct_normal_irradiance,temperature_2m&timezone=Europe%2FMadrid&forecast_days=2"
-            req = urllib.request.Request(url, headers={"User-Agent": "CasetaGuardian/2.0"})
-            with urllib.request.urlopen(req, timeout=10) as rep:
-                data = json.loads(rep.read().decode())
-                
-            daily = data.get("daily", {})
-            rad_list = daily.get("shortwave_radiation_sum", [22.0, 22.0])
-            temp_max_list = daily.get("temperature_2m_max", [30.0, 30.0])
-            
-            self.today_kwh_est = max(1.0, (rad_list[0] / 3.6) * 1.35 * 0.78)
-            self.tomorrow_kwh_est = max(1.0, (rad_list[1] / 3.6) * 1.35 * 0.78)
-            self.max_temp_today = temp_max_list[0]
-            
-            hourly = data.get("hourly", {})
-            dni = hourly.get("direct_normal_irradiance", [])
-            temps = hourly.get("temperature_2m", [])
-            current_hour = get_madrid_now().hour
-            
-            if len(dni) >= 24:
-                remaining_dni = sum(dni[current_hour:24])
-                total_dni = max(1.0, sum(dni[0:24]))
-                self.remaining_kwh_today = self.today_kwh_est * (remaining_dni / total_dni)
-            else:
-                self.remaining_kwh_today = max(0.0, self.today_kwh_est * (1.0 - (current_hour / 20.0)))
-                
-            if len(temps) >= 22:
-                self.sunset_temp_today = temps[21]
-            else:
-                self.sunset_temp_today = self.max_temp_today - 4.0
-                
-            if self.max_temp_today >= 38.0:
-                self.blackout_risk = 70
-            elif self.max_temp_today >= 34.0:
-                self.blackout_risk = 45
-            elif self.max_temp_today >= 31.0:
-                self.blackout_risk = 25
-            else:
-                self.blackout_risk = 10
-
-            log.info(f"📊 Open-Meteo: Sol total = {self.today_kwh_est:.1f} kWh (Queden {self.remaining_kwh_today:.1f} kWh) | Màx = {self.max_temp_today:.1f}ºC | Risc Tall = {self.blackout_risk}% -> Target SoC = {self.target_reserve_soc:.0f}%")
-            
-            cache = {
-                "today_kwh": round(self.today_kwh_est, 1),
-                "remaining_kwh": round(self.remaining_kwh_today, 1),
-                "tomorrow_kwh": round(self.tomorrow_kwh_est, 1),
-                "max_temp_today": round(self.max_temp_today, 1),
-                "sunset_temp": round(self.sunset_temp_today, 1),
-                "blackout_risk": self.blackout_risk,
-                "target_reserve_soc": self.target_reserve_soc,
-                "timestamp": now
-            }
-            with open("/tmp/caseta_forecast_cache.json", "w") as f:
-                json.dump(cache, f)
-            if self.client:
-                self.client.publish("caseta/forecast", json.dumps({"value": cache}), retain=True)
-                if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                    self.client.publish(f"N/{self.portal_id}/caseta/forecast", json.dumps({"value": cache}), retain=True)
-                
-        except Exception as e:
-            log.warning(f"Error actualitzant Open-Meteo: {e}")
-
     def update_inforatge(self):
         """Consulta Inforatge Ador cada 15 minuts per obtenir condicions hiper-locals reals."""
         now = time.time()
         if now - self.last_inforatge_time < 900:  # Cada 15 minuts
             return
-            
+
         self.last_inforatge_time = now
         try:
             url = "https://inforatge.com/meteo-ador"
@@ -504,351 +410,12 @@ class CasetaGuardian:
             with open("/tmp/caseta_inforatge_cache.json", "w") as f:
                 json.dump(inforatge_data, f)
 
-            if self.client:
-                self.client.publish("caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
-                if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                    self.client.publish(f"N/{self.portal_id}/caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
+            if self.mqtt_client.client:
+                self.mqtt_client.publish("caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
+                self.mqtt_client.publish_to_portal("caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
             log.info(f"📍 Inforatge Ador: Ext {temp}ºC | Hum {hum}% | Vent {vent_vel} km/h {vent_dir} | Pressió {press} hPa")
         except Exception as e:
             log.warning(f"Error consultant Inforatge Ador: {e}")
-
-    def update_termo_status(self):
-        """Consulta periòdicament l'estat del Termo Elèctric (Tuya Plug) via LocalTuya LAN directa i publica a FlashMQ."""
-        now = time.time()
-        if now - self.last_termo_update_time < 30.0:
-            return
-        self.last_termo_update_time = now
-
-        cfg = load_config()
-        deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
-        ip = cfg.get("tuya_termo_ip", "192.168.1.100")
-        local_key = cfg.get("tuya_termo_local_key", "a|Ul|G=$U%b{{K9g")
-        version = float(cfg.get("tuya_termo_version", 3.3))
-
-        # 1. Intent Directe per LocalTuya (LAN local, 0 dependència d'internet)
-        try:
-            import tinytuya
-            d = tinytuya.OutletDevice(deviceId, ip, local_key)
-            d.set_version(version)
-            d.set_socketPersistent(False)
-            data = d.status()
-            dps = data.get("dps", {})
-            if dps:
-                is_on = bool(dps.get("1", False))
-                current_a = float(dps.get("18", 0)) / 1000.0
-                power_w = float(dps.get("19", 0)) / 10.0
-                voltage_v = float(dps.get("20", 0)) / 10.0
-
-                # Càlcul d'energia i temps d'escalfament
-                dt_termo = now - getattr(self, "last_termo_calc_time", now)
-                self.last_termo_calc_time = now
-                now_madrid = get_madrid_now()
-
-                # Model Físic Calorimètric (Bessó Digital ACS 100L)
-                hours_step = dt_termo / 3600.0
-                if power_w >= 100.0:
-                    kwh_step = (power_w / 1000.0) * hours_step
-                    self.termo_est_temp = min(80.0, self.termo_est_temp + (kwh_step * 8.605))
-                    if not getattr(self, "termo_currently_heating", False):
-                        self.termo_currently_heating = True
-                        if not self.termo_start_time_str:
-                            self.termo_start_time_str = now_madrid.strftime("%H:%M")
-                    self.termo_kwh_today += kwh_step
-                    self.termo_active_seconds_today += dt_termo
-                else:
-                    self.termo_est_temp = max(20.0, self.termo_est_temp - (hours_step * 0.35))
-                    if getattr(self, "termo_currently_heating", False):
-                        self.termo_currently_heating = False
-                        self.termo_end_time_str = now_madrid.strftime("%H:%M")
-                        if self.termo_est_temp >= 55.0:
-                            self.termo_est_temp = 60.0
-                            self.termo_heated_today = True
-                            self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
-
-                if is_on and power_w < 50.0 and self.termo_est_temp >= 58.0:
-                    self.termo_heated_today = True
-                    self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
-
-                days_since_60 = None
-                if getattr(self, "termo_last_heated_date", ""):
-                    try:
-                        d_last = datetime.datetime.strptime(self.termo_last_heated_date, "%Y-%m-%d").date()
-                        days_since_60 = (now_madrid.date() - d_last).days
-                    except Exception:
-                        days_since_60 = None
-                if getattr(self, "termo_heated_today", False):
-                    days_since_60 = 0
-
-                termo_data = {
-                    "is_on": is_on,
-                    "power_w": round(power_w, 1),
-                    "voltage_v": round(voltage_v, 1),
-                    "current_a": round(current_a, 2),
-                    "source": "localtuya",
-                    "temp_c": round(self.termo_est_temp, 1),
-                    "kwh_today": round(self.termo_kwh_today, 2),
-                    "start_time": self.termo_start_time_str,
-                    "end_time": self.termo_end_time_str,
-                    "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
-                    "is_heating": self.termo_currently_heating,
-                    "last_heated_date": getattr(self, "termo_last_heated_date", ""),
-                    "days_since_60": days_since_60,
-                    "timestamp": now
-                }
-                self.termo_status = termo_data
-                if self.client:
-                    self.client.publish("caseta/termo", json.dumps({"value": termo_data}), retain=True)
-                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                        self.client.publish(f"N/{self.portal_id}/caseta/termo", json.dumps({"value": termo_data}), retain=True)
-                return
-        except Exception as e_local:
-            log.debug(f"LocalTuya status error: {e_local}")
-
-        # 2. Fallback Tuya Cloud OpenAPI si falla la xarxa local
-        try:
-            cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
-            sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
-            base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
-
-            t_ms = str(int(now * 1000))
-            url_path_token = "/v1.0/token?grant_type=1"
-            content_hash = hashlib.sha256(b"").hexdigest()
-            sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
-            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
-                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-            })
-            with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
-                token = json.loads(rep_tok.read().decode())["result"]["access_token"]
-
-            path_status = f"/v1.0/devices/{deviceId}/status"
-            t_ms = str(int(time.time() * 1000))
-            content_hash = hashlib.sha256(b"").hexdigest()
-            sign_str = f"{cid}{token}{t_ms}GET\n{content_hash}\n\n{path_status}"
-            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-
-            req_status = urllib.request.Request(f"{base_url}{path_status}", headers={
-                "client_id": cid, "access_token": token, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-            })
-            with urllib.request.urlopen(req_status, timeout=5) as rep:
-                res = json.loads(rep.read().decode())
-                status_list = res.get("result", [])
-                status_map = {item["code"]: item["value"] for item in status_list}
-                is_on = status_map.get("switch_1", False)
-                power_w = status_map.get("cur_power", 0) / 10.0
-                voltage_v = status_map.get("cur_voltage", 0) / 10.0
-                current_a = status_map.get("cur_current", 0) / 1000.0
-
-                dt_termo = now - getattr(self, "last_termo_calc_time", now)
-                self.last_termo_calc_time = now
-                now_madrid = get_madrid_now()
-
-                hours_step = dt_termo / 3600.0
-                if power_w >= 100.0:
-                    kwh_step = (power_w / 1000.0) * hours_step
-                    self.termo_est_temp = min(80.0, self.termo_est_temp + (kwh_step * 8.605))
-                    if not getattr(self, "termo_currently_heating", False):
-                        self.termo_currently_heating = True
-                        if not self.termo_start_time_str:
-                            self.termo_start_time_str = now_madrid.strftime("%H:%M")
-                    self.termo_kwh_today += kwh_step
-                    self.termo_active_seconds_today += dt_termo
-                else:
-                    self.termo_est_temp = max(20.0, self.termo_est_temp - (hours_step * 0.35))
-                    if getattr(self, "termo_currently_heating", False):
-                        self.termo_currently_heating = False
-                        self.termo_end_time_str = now_madrid.strftime("%H:%M")
-                        if self.termo_est_temp >= 55.0:
-                            self.termo_est_temp = 60.0
-                            self.termo_heated_today = True
-                            self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
-
-                if is_on and power_w < 50.0 and self.termo_est_temp >= 58.0:
-                    self.termo_heated_today = True
-                    self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
-
-                days_since_60 = None
-                if getattr(self, "termo_last_heated_date", ""):
-                    try:
-                        d_last = datetime.datetime.strptime(self.termo_last_heated_date, "%Y-%m-%d").date()
-                        days_since_60 = (now_madrid.date() - d_last).days
-                    except Exception:
-                        days_since_60 = None
-                if getattr(self, "termo_heated_today", False):
-                    days_since_60 = 0
-
-                termo_data = {
-                    "is_on": is_on,
-                    "power_w": round(power_w, 1),
-                    "voltage_v": round(voltage_v, 1),
-                    "current_a": round(current_a, 2),
-                    "source": "cloud",
-                    "temp_c": round(self.termo_est_temp, 1),
-                    "kwh_today": round(self.termo_kwh_today, 2),
-                    "start_time": self.termo_start_time_str,
-                    "end_time": self.termo_end_time_str,
-                    "active_mins": int(round(self.termo_active_seconds_today / 60.0)),
-                    "is_heating": self.termo_currently_heating,
-                    "last_heated_date": getattr(self, "termo_last_heated_date", ""),
-                    "days_since_60": days_since_60,
-                    "timestamp": now
-                }
-                self.termo_status = termo_data
-                if self.client:
-                    self.client.publish("caseta/termo", json.dumps({"value": termo_data}), retain=True)
-                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                        self.client.publish(f"N/{self.portal_id}/caseta/termo", json.dumps({"value": termo_data}), retain=True)
-        except Exception:
-            pass
-
-    def send_termo_tuya_command(self, power: bool = False, reason: str = ""):
-        """Envia ordre d'encesa/apagada al Termo Elèctric via LocalTuya (LAN directa) amb fallback a Tuya Cloud."""
-        cfg = load_config()
-        deviceId = cfg.get("tuya_termo_device_id", "bf425b5cf5fc5af1ecpxml")
-        ip = cfg.get("tuya_termo_ip", "192.168.1.100")
-        local_key = cfg.get("tuya_termo_local_key", "a|Ul|G=$U%b{{K9g")
-        version = float(cfg.get("tuya_termo_version", 3.3))
-
-        # 1. Intent Prioritari LocalTuya LAN (Instantani <20ms, sense dependre d'internet)
-        try:
-            import tinytuya
-            d = tinytuya.OutletDevice(deviceId, ip, local_key)
-            d.set_version(version)
-            d.set_socketPersistent(False)
-            res = d.set_status(power, 1)
-            log.info(f"♨️ [TERMO LOCALTUYA LAN] Power {'ON' if power else 'OFF'} ({reason}): {res}")
-            return res
-        except Exception as e_local:
-            log.warning(f"Error enviant per LocalTuya LAN: {e_local}. Reintentant per Tuya Cloud...")
-
-        # 2. Fallback Tuya Cloud OpenAPI
-        try:
-            cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
-            sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
-            base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
-
-            t_ms = str(int(time.time() * 1000))
-            url_path_token = "/v1.0/token?grant_type=1"
-            content_hash = hashlib.sha256(b"").hexdigest()
-            sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
-            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
-                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-            })
-            with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
-                token = json.loads(rep_tok.read().decode())["result"]["access_token"]
-
-            path_cmd = f"/v1.0/devices/{deviceId}/commands"
-            body_dict = {"commands": [{"code": "switch_1", "value": power}]}
-            body_str = json.dumps(body_dict)
-            c_hash = hashlib.sha256(body_str.encode()).hexdigest()
-            sign_str_cmd = f"{cid}{token}{t_ms}POST\n{c_hash}\n\n{path_cmd}"
-            sign_cmd = hmac.new(sec.encode(), sign_str_cmd.encode(), hashlib.sha256).hexdigest().upper()
-
-            req_cmd = urllib.request.Request(f"{base_url}{path_cmd}", data=body_str.encode(), headers={
-                "client_id": cid, "access_token": token, "sign": sign_cmd, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-            }, method="POST")
-            with urllib.request.urlopen(req_cmd, timeout=5) as rep:
-                res = json.loads(rep.read().decode())
-                log.info(f"♨️ [TERMO TUYA CLOUD] Termo Power {'ON' if power else 'OFF'} ({reason}): {res}")
-                return res
-        except Exception as e:
-            log.error(f"Error fatal enviant comanda Termo Tuya Cloud: {e}")
-            return False
-
-    def update_doble_status(self):
-        """Consulta periòdicament l'estat de l'Endoll Doble Cuina (Microones/Torradora + Cafetera) via LocalTuya LAN directa i publica a FlashMQ."""
-        now = time.time()
-        if now - self.last_doble_update_time < 20.0:
-            return
-        self.last_doble_update_time = now
-
-        cfg = load_config()
-        deviceId = cfg.get("tuya_doble_device_id", "bfc4299e2667184f13nv0z")
-        ip = cfg.get("tuya_doble_ip", "192.168.1.101")
-        local_key = cfg.get("tuya_doble_local_key", "1}[7q<mNG+ZE7Fkc")
-        version = float(cfg.get("tuya_doble_version", 3.3))
-
-        try:
-            import tinytuya
-            d = tinytuya.OutletDevice(deviceId, ip, local_key)
-            d.set_version(version)
-            d.set_socketPersistent(False)
-            data = d.status()
-            dps = data.get("dps", {})
-            if dps:
-                ch1_on = bool(dps.get("1", False))
-                ch2_on = bool(dps.get("2", False))
-                current_a = float(dps.get("18", 0)) / 1000.0
-                power_w = float(dps.get("19", 0)) / 10.0
-                voltage_v = float(dps.get("20", 0)) / 10.0
-
-                dt = now - getattr(self, "last_doble_calc_time", now)
-                self.last_doble_calc_time = now
-                if power_w >= 10.0:
-                    self.doble_kwh_today += (power_w / 1000.0) * (dt / 3600.0)
-
-                doble_data = {
-                    "ch1_name": "Microones / Torradora",
-                    "ch1_on": ch1_on,
-                    "ch2_name": "Cafetera",
-                    "ch2_on": ch2_on,
-                    "power_w": round(power_w, 1),
-                    "voltage_v": round(voltage_v, 1),
-                    "current_a": round(current_a, 2),
-                    "kwh_today": round(self.doble_kwh_today, 2),
-                    "source": "localtuya",
-                    "timestamp": now
-                }
-                self.doble_status = doble_data
-                if self.client:
-                    self.client.publish("caseta/endoll_doble", json.dumps({"value": doble_data}), retain=True)
-                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                        self.client.publish(f"N/{self.portal_id}/caseta/endoll_doble", json.dumps({"value": doble_data}), retain=True)
-                return
-        except Exception as e:
-            log.debug(f"LocalTuya endoll doble error: {e}")
-
-    def send_doble_tuya_command(self, channel: int, power: bool, reason: str = ""):
-        """Envia ordre d'encesa/apagada al canal 1 (Microones/Torradora) o 2 (Cafetera) via LocalTuya LAN."""
-        cfg = load_config()
-        deviceId = cfg.get("tuya_doble_device_id", "bfc4299e2667184f13nv0z")
-        ip = cfg.get("tuya_doble_ip", "192.168.1.101")
-        local_key = cfg.get("tuya_doble_local_key", "1}[7q<mNG+ZE7Fkc")
-        version = float(cfg.get("tuya_doble_version", 3.3))
-        ch_name = "Microones/Torradora (CH1)" if channel == 1 else "Cafetera (CH2)"
-
-        try:
-            import tinytuya
-            d = tinytuya.OutletDevice(deviceId, ip, local_key)
-            d.set_version(version)
-            d.set_socketPersistent(False)
-            res = d.set_status(power, channel)
-            log.info(f"🥐 [END OLL DOBLE LAN] {ch_name} Power {'ON' if power else 'OFF'} ({reason}): {res}")
-            return res
-        except Exception as e:
-            log.warning(f"Error enviant comanda a Endoll Doble per LAN: {e}")
-            return False
-
-    def get_tuya_access_token(self, cid: str, sec: str, base_url: str) -> str:
-        """Obté i reutilitza el token d'accés de Tuya Cloud durant 1 hora (evita fer 2 peticions a cada consulta)."""
-        now = time.time()
-        if hasattr(self, "_tuya_token") and self._tuya_token and (now - getattr(self, "_tuya_token_time", 0.0) < 3600):
-            return self._tuya_token
-
-        t_ms = str(int(now * 1000))
-        url_path_token = "/v1.0/token?grant_type=1"
-        content_hash = hashlib.sha256(b"").hexdigest()
-        sign_str = f"{cid}{t_ms}GET\n{content_hash}\n\n{url_path_token}"
-        sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-        req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
-            "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-        })
-        with urllib.request.urlopen(req_token, timeout=5) as rep_tok:
-            token = json.loads(rep_tok.read().decode())["result"]["access_token"]
-            self._tuya_token = token
-            self._tuya_token_time = now
-            return token
 
     def update_ac_status(self):
         """Consulta l'estat real del comandament virtual de l'AC a Tuya Cloud cada 2 minuts (120s) amb token en memòria cau."""
@@ -857,14 +424,13 @@ class CasetaGuardian:
             return
         self.last_ac_status_query_time = now
 
-        cfg = load_config()
-        cid = cfg.get("tuya_cloud_client_id") or cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
-        sec = cfg.get("tuya_cloud_secret") or cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
-        base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
-        remote_id = cfg.get("tuya_remote_id", "bfc77f364d40be79e86290")
+        cid = require_config(config, "tuya_client_id", "Client ID de Tuya Cloud")
+        sec = require_config(config, "tuya_secret", "Secret de Tuya Cloud")
+        base_url = config.get("tuya_base_url", "https://openapi.tuyaeu.com")
+        remote_id = require_config(config, "tuya_remote_id", "ID del comandament virtual de l'AC")
 
         try:
-            token = self.get_tuya_access_token(cid, sec, base_url)
+            token = self.tuya.get_tuya_access_token(cid, sec, base_url)
             if not token:
                 return
 
@@ -886,11 +452,11 @@ class CasetaGuardian:
                     temp = int(status_map.get("temp", self.ac_current_temp))
                     mode_val = str(status_map.get("mode", "0"))
                     mode_str = "Fred" if mode_val in ("0", "cool") else "Auto"
-                    
+
                     prev_pwr = getattr(self, "ac_current_power", None)
 
                     if prev_pwr is not None:
-                        # ✋ Detecció d'apagat manual per l'usuari (Tuya Smart / Smart Life / Comandament)
+                        # ✋ Detecció d'apagat manual per l'usuari
                         if prev_pwr == 1 and pwr == 0:
                             dt_guardian_off = now - getattr(self, "last_guardian_ac_power_off_time", 0.0)
                             if dt_guardian_off > 45.0:
@@ -899,7 +465,7 @@ class CasetaGuardian:
                                 fin_dt = get_madrid_now() + datetime.timedelta(seconds=3600)
                                 fin_str = fin_dt.strftime("%H:%M")
                                 log.info(f"✋ [CLIMA] Detectat apagat manual de l'AC per l'usuari (Tuya/App). Bloqueig d'encesa automàtica durant 60 minuts (fins a les {fin_str}h).")
-                                self.send_notification(
+                                self.notifications.send_notification(
                                     "✋ AC Apagat Manualment",
                                     f"S'ha detectat l'apagat manual de l'aire condicionat. No es tornarà a encendre automàticament fins a les {fin_str}h (pausa d'1 hora).",
                                     "default",
@@ -920,10 +486,10 @@ class CasetaGuardian:
                             if dt_guardian_cmd > 45.0:
                                 self.ac_manual_on_time = now
                                 log.info(f"🌡️ [CLIMA] Canvi manual de consigna a {temp}ºC per l'usuari. Prioritat manual estesa 2 hores.")
-                    
+
                     self.ac_current_power = pwr
                     self.ac_current_temp = temp
-                    
+
                     # Càlcul del motiu per a telemetria MQTT
                     manual_on = bool(getattr(self, "ac_manual_on_time", None) and (now - self.ac_manual_on_time < 7200.0))
                     manual_off = bool(getattr(self, "ac_manual_off_time", None) and (now - self.ac_manual_off_time < 3600.0))
@@ -949,106 +515,20 @@ class CasetaGuardian:
                         "manual_off": manual_off,
                         "timestamp": now
                     }
-                    if self.client:
-                        self.client.publish("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
-                        if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                            self.client.publish(f"N/{self.portal_id}/caseta/ac", json.dumps({"value": ac_payload}), retain=True)
+                    if self.mqtt_client.client:
+                        self.mqtt_client.publish("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
+                        self.mqtt_client.publish_to_portal("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
         except Exception as e:
             log.debug(f"Error consultant estat AC Tuya: {e}")
-
-    def send_ac_tuya_command(self, power: int = 1, temp: int = 26, mode: int = 0, fan: int = 0, reason: str = ""):
-        """Envia ordres d'infrarojos al Mitsubishi Electric mitjançant Tuya Cloud OpenAPI i publica a MQTT."""
-        now = time.time()
-        self.last_ac_command_time = now
-        try:
-            cfg = load_config()
-            cid = cfg.get("tuya_client_id", "nvrwk5eqvcnnt3majq9c")
-            sec = cfg.get("tuya_secret", "c1d97d0a854a451587fa02359aa327be")
-            infrared_id = cfg.get("tuya_infrared_id", "bf9d7ccaca278f0d6dltaf")
-            remote_id = cfg.get("tuya_remote_id", "bfc77f364d40be79e86290")
-            base_url = cfg.get("tuya_base_url", "https://openapi.tuyaeu.com")
-
-            # 1. Obtenir Token Tuya
-            t_ms = str(int(now * 1000))
-            url_path_token = "/v1.0/token?grant_type=1"
-            content_hash = hashlib.sha256(b"").hexdigest()
-            str_to_sign = f"GET\n{content_hash}\n\n{url_path_token}"
-            sign_str = f"{cid}{t_ms}{str_to_sign}"
-            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
-            req_token = urllib.request.Request(f"{base_url}{url_path_token}", headers={
-                "client_id": cid, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-            })
-            with urllib.request.urlopen(req_token, timeout=8) as rep_tok:
-                tok_data = json.loads(rep_tok.read().decode())
-                token = tok_data.get("result", {}).get("access_token")
-
-            if not token:
-                log.warning(f"No s'ha pogut obtenir token Tuya: {tok_data}")
-                return False
-
-            def send_sub_cmd(code, val):
-                t_ms_sub = str(int(time.time() * 1000))
-                url_path_cmd = f"/v2.0/infrareds/{infrared_id}/air-conditioners/{remote_id}/command"
-                body_dict = {"code": code, "value": val}
-                body_str = json.dumps(body_dict)
-                c_hash = hashlib.sha256(body_str.encode()).hexdigest()
-                s_to_sign = f"POST\n{c_hash}\n\n{url_path_cmd}"
-                s_str = f"{cid}{token}{t_ms_sub}{s_to_sign}"
-                s = hmac.new(sec.encode(), s_str.encode(), hashlib.sha256).hexdigest().upper()
-                req_cmd = urllib.request.Request(f"{base_url}{url_path_cmd}", data=body_str.encode(), headers={
-                    "client_id": cid, "access_token": token, "sign": s, "t": t_ms_sub, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-                }, method="POST")
-                with urllib.request.urlopen(req_cmd, timeout=8) as rep_cmd:
-                    return json.loads(rep_cmd.read().decode())
-
-            if power == 0:
-                res = send_sub_cmd("power", 0)
-                self.ac_current_power = 0
-                self.last_guardian_ac_power_off_time = now
-                mode_str = "Apagat"
-                log.info(f"❄️ [CLIMA AUTÒNOM] AC Power OFF ({reason}): {res}")
-            elif getattr(self, "ac_current_power", 0) == 1:
-                # Si ja està encès, NOMÉS enviem la nova temperatura (1 sol bip suau com el comandament!)
-                res = send_sub_cmd("temp", int(temp))
-                self.ac_current_temp = int(temp)
-                mode_str = "Fred" if mode == 0 else "Auto"
-                log.info(f"❄️ [CLIMA AUTÒNOM] AC Consigna {temp}ºC (1 sol bip) ({reason}): {res}")
-            else:
-                # Si estava apagat i l'encenem per primer cop:
-                res = send_sub_cmd("power", 1)
-                self.ac_current_power = 1
-                self.ac_current_temp = int(temp)
-                mode_str = "Fred" if mode == 0 else "Auto"
-                log.info(f"❄️ [CLIMA AUTÒNOM] AC Power ON a {temp}ºC ({reason}): {res}")
-
-            # Publicació MQTT
-            ac_payload = {
-                "power": self.ac_current_power,
-                "temp": self.ac_current_temp,
-                "mode": mode_str,
-                "reason": reason,
-                "timestamp": now
-            }
-            if self.client:
-                self.client.publish("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
-                if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                    self.client.publish(f"N/{self.portal_id}/caseta/ac", json.dumps({"value": ac_payload}), retain=True)
-
-            return True
-        except Exception as e:
-            log.warning(f"Error enviant comanda AC Tuya: {e}")
-            return False
 
     def evaluate_climate_control(self, now_madrid):
         """Avalua les Lleis de Climatització Intel·ligent de la Caseta."""
         now = time.time()
 
         # 🍂 Climatització Automàtica Desactivada (Temporada suau de tardor/hivern)
-        # S'han cancel·lat totes les enceses automàtiques (diürnes i nocturnes).
-        # Només es manté l'Escut SAI de seguretat per si l'usuari encén l'AC manualment i la bateria baixa del 60%.
         if 0 < self.soc < 60.0 and getattr(self, "ac_current_power", 0) != 0:
-            self.send_ac_tuya_command(power=0, reason="🚨 Escut SAI: Bateria <60% -> Apagat de l'AC")
-            self.send_notification("❄️ Escut SAI Clima", "Bateria <60%! S'ha apagat l'AC automàticament per protegir la reserva de bateria!", "default", "snowflake")
+            self.tuya.send_ac_command(power=0, reason="🚨 Escut SAI: Bateria <60% -> Apagat de l'AC")
+            self.notifications.send_notification("❄️ Escut SAI Clima", "Bateria <60%! S'ha apagat l'AC automàticament per protegir la reserva de bateria!", "default", "snowflake")
             self.ac_turned_off_by_guardian = True
         return
 
@@ -1066,7 +546,7 @@ class CasetaGuardian:
         current_minute = now_madrid.minute
         time_decimal = current_hour + (current_minute / 60.0)
         is_weekend_or_hol = self.is_holiday
-        
+
         # 1. 🚨 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
         if self.blackout_risk >= 60:
             target = 95.0
@@ -1122,39 +602,35 @@ class CasetaGuardian:
             # 2. Publicació MQTT per a clients externs
             topic = f"W/{self.portal_id}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
             payload = json.dumps({"value": target})
-            self.client.publish(topic, payload)
+            self.mqtt_client.publish(topic, payload)
             self.last_applied_min_soc = target
 
     def sync_grid_setpoint(self):
-        """Modula dinàmicament el Grid Setpoint de Victron ESS:
-        - Amb Termo Actiu (>=500W):
-            • SoC >= 84%: 400.0 W (Estalvi màxim de xarxa i creació del 'Vas Buit' per al sol de migdia)
-            • 78% <= SoC < 84%: 600.0 W (Transició suau frenant la descàrrega)
-            • SoC < 78%: 800.0 W (Blindatge total contra descàrrega)
-        - Amb Termo en Repòs:
-            • SoC < 90%: 200.0 W (Amortidor robust per a consums basals i blindatge anti-exportació)
-            • SoC >= 90%: 50.0 W (Reducció d'importació quan la bateria està plena)
-        """
+        """Modula dinàmicament el Grid Setpoint de Victron ESS."""
         now = time.time()
-        if now - self.last_grid_setpoint_eval_time < 20:
-            return
-        self.last_grid_setpoint_eval_time = now
 
         termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
         termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
+        is_termo_active = termo_on and termo_p >= 500.0
 
-        # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W)
-        if termo_on and termo_p >= 500.0:
-            now_madrid = get_madrid_now()
-            time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
-            # 🌙 A. Franja Matinada Vall P3 (04:00h - 06:30h): Màxim suport de xarxa respectant els 5A contractats (800W / ~3.5A)
-            if 4.0 <= time_decimal < 6.5:
-                target = 800.0
-                reason = "🌙 Suport Vall P3 (Matinada) -> Setpoint 800W (Límit segur 5A contractats)"
-            else:
-                # ☀️ B. Termo Actiu Diürn: Blindatge de bateria a 800W (zero trompada)
-                target = 800.0
-                reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint 800W (Blindatge Total Bateria - Límit 5A)"
+        # Resposta immediata (0s d'espera): Bypassem el throttle de 20s si el termo s'encén o s'apaga
+        termo_state_changed = (is_termo_active and (self.last_grid_setpoint or 0) < 500.0) or \
+                              (not is_termo_active and (self.last_grid_setpoint or 0) >= 500.0)
+
+        if not termo_state_changed and (now - self.last_grid_setpoint_eval_time < 20):
+            return
+        self.last_grid_setpoint_eval_time = now
+
+        # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W) -> Importació a 4.5A (Límit segur contractat 5A)
+        if is_termo_active:
+            # Reconnexió immediata a xarxa si el MultiPlus estava en Inverter Only (0s d'espera)
+            if self.vebus_mode == 2:
+                self.set_multiplus_mode(3, f"♨️ Termo Actiu ({termo_p:.0f}W) -> Reconnexió Immediata a Xarxa (Suport 4.5A)")
+
+            grid_v_safe = self.grid_v if getattr(self, "grid_v", 0.0) >= 190.0 else 230.0
+            # 4.5A exactes ajustats a la tensió real de la xarxa (ex: 222V * 4.5A = 1000W; 230V * 4.5A = 1035W)
+            target = round(min(1050.0, max(900.0, 4.5 * grid_v_safe)))
+            reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint {target:.0f}W (4.5A a {grid_v_safe:.1f}V - Blindatge Bateria)"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
@@ -1189,11 +665,11 @@ class CasetaGuardian:
         now = time.time()
         if now - self.last_mode_switch_time < 20:
             return
-            
+
         mode_names = {1: "Charger Only", 2: "Inverter Only (Aïllat)", 3: "ON (Connectat a Xarxa)", 4: "OFF"}
         old_mode_str = mode_names.get(self.vebus_mode, f"Mode {self.vebus_mode}")
         new_mode_str = mode_names.get(target_mode, f"Mode {target_mode}")
-        
+
         log.info(f"🔄 CANVI DE MODE MULTIPLUS: {old_mode_str} -> {new_mode_str} ({reason})")
 
         # 1. Intent D-Bus Natiu directe sobre VE.Bus (Instantani <0.1ms)
@@ -1215,14 +691,14 @@ class CasetaGuardian:
         # 2. Publicació MQTT
         topic = f"W/{self.portal_id}/vebus/276/Mode"
         payload = json.dumps({"value": target_mode})
-        self.client.publish(topic, payload)
-        
+        self.mqtt_client.publish(topic, payload)
+
         self.vebus_mode = target_mode
         self.last_mode_switch_time = now
         self.relay_switch_count += 1
-        
+
         priority = "high" if target_mode == 2 else "default"
-        self.send_notification("Canvi de Mode MultiPlus", f"{old_mode_str} ➡️ {new_mode_str}\n{reason}", priority=priority)
+        self.notifications.send_notification("Canvi de Mode MultiPlus", f"{old_mode_str} ➡️ {new_mode_str}\n{reason}", priority=priority)
 
     def calculate_today_cost(self) -> float:
         energy_cost = (self.p1_kwh_today * P1_RATE) + (self.p2_kwh_today * P2_RATE) + (self.p3_kwh_today * P3_RATE)
@@ -1251,6 +727,8 @@ class CasetaGuardian:
             "soh_bms": round(self.soh, 0),
             "termo_heated_today": getattr(self, "termo_heated_today", False),
             "termo_last_heated_date": getattr(self, "termo_last_heated_date", "2026-08-27"),
+            "termo_last_60_ts": getattr(self, "termo_last_60_ts", None),
+            "termo_est_temp": round(getattr(self, "termo_est_temp", 60.0), 1),
             "termo_kwh_today": round(getattr(self, "termo_kwh_today", 0.0), 2),
             "termo_start_time_str": getattr(self, "termo_start_time_str", ""),
             "termo_end_time_str": getattr(self, "termo_end_time_str", ""),
@@ -1273,13 +751,13 @@ class CasetaGuardian:
         if self.last_stats_calc_time == 0.0:
             self.last_stats_calc_time = now
             return
-            
+
         dt = now - self.last_stats_calc_time
         self.last_stats_calc_time = now
-        
+
         if now_madrid is None:
             now_madrid = get_madrid_now()
-            
+
         today_str = now_madrid.strftime("%Y-%m-%d")
         if today_str != self.current_day_str:
             self.save_daily_stats()
@@ -1308,22 +786,22 @@ class CasetaGuardian:
             log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str} (Festiu/CapSetmana: {self.is_holiday})")
 
         hours = dt / 3600.0
-        
+
         if self.pv_p > 0:
             self.solar_kwh_today += (self.pv_p / 1000.0) * hours
             if self.pv_p > self.solar_peak_w:
                 self.solar_peak_w = self.pv_p
-                
+
         if self.ac_loads > 0:
             self.consumption_kwh_today += (self.ac_loads / 1000.0) * hours
-            
+
         if self.vebus_mode == 2:
             self.mode2_time_seconds += dt
         else:
             if self.grid_p > 0:
                 imp_kwh = (self.grid_p / 1000.0) * hours
                 self.grid_import_kwh_today += imp_kwh
-                
+
                 ch = now_madrid.hour
                 if self.is_holiday:
                     self.p3_kwh_today += imp_kwh
@@ -1340,6 +818,32 @@ class CasetaGuardian:
             delta_mv = (self.cell_max - self.cell_min) * 1000.0
             if delta_mv > self.max_cell_delta_today:
                 self.max_cell_delta_today = delta_mv
+
+        # Integració de consum elèctric dels endolls Tuya (Termo i Cuina) en memòria RAM (ZERO desgast Flash)
+        if self.termo_status:
+            termo_p = float(self.termo_status.get("power_w", 0.0))
+            if termo_p >= 5.0:
+                kwh_inc = (termo_p / 1000.0) * hours
+                self.termo_kwh_today += kwh_inc
+                self.termo_active_seconds_today += dt
+                self.termo_currently_heating = True
+                if not self.termo_start_time_str:
+                    self.termo_start_time_str = now_madrid.strftime("%H:%M")
+                # Model Físic Calorimètric (100L): +8.605 ºC per kWh injectat
+                # Límit 59.5 ºC per càlcul d'energia (els 60.0 ºC només es fixen si el termòstat Ariston talla a <50W)
+                self.termo_est_temp = min(59.5, self.termo_est_temp + (kwh_inc * 8.605))
+            else:
+                self.termo_currently_heating = False
+                if self.termo_start_time_str and not self.termo_end_time_str and self.termo_kwh_today > 0.1:
+                    self.termo_end_time_str = now_madrid.strftime("%H:%M")
+                # Dissipació tèrmica per temps transcorregut:
+                # El termo perd ~0.35 ºC / hora d'aïllament mentre està apagat/repòs (fins a temp ambient 20 ºC)
+                self.termo_est_temp = max(20.0, self.termo_est_temp - (hours * 0.35))
+
+        if self.doble_status:
+            doble_p = float(self.doble_status.get("power_w", 0.0))
+            if doble_p >= 2.0:
+                self.doble_kwh_today += (doble_p / 1000.0) * hours
 
         # Publicació MQTT i memòria RAM cada 10 segons (ZERO desgast Flash)
         if now - self.last_stats_publish_time >= 10.0:
@@ -1365,10 +869,63 @@ class CasetaGuardian:
                 "timestamp": now
             }
             try:
-                if self.client:
-                    if self.portal_id not in ("c0619ab2xxxx", "+", "#"):
-                        self.client.publish(f"N/{self.portal_id}/caseta/stats", json.dumps({"value": stats}), retain=True)
-                    self.client.publish("caseta/stats", json.dumps({"value": stats}), retain=True)
+                if self.mqtt_client.client:
+                    self.mqtt_client.publish_to_portal("caseta/stats", json.dumps({"value": stats}), retain=True)
+                    self.mqtt_client.publish("caseta/stats", json.dumps({"value": stats}), retain=True)
+
+                    # Publicació d'estat i energia dels endolls intel·ligents Tuya
+                    if self.termo_status:
+                        days_since_60 = None
+                        hours_since_60 = None
+                        if getattr(self, "termo_last_60_ts", None):
+                            try:
+                                hours_since_60 = round((now - self.termo_last_60_ts) / 3600.0, 1)
+                            except Exception:
+                                hours_since_60 = None
+                        if getattr(self, "termo_last_heated_date", ""):
+                            try:
+                                d_last = datetime.datetime.strptime(self.termo_last_heated_date, "%Y-%m-%d").date()
+                                days_since_60 = (now_madrid.date() - d_last).days
+                            except Exception:
+                                days_since_60 = None
+                        if getattr(self, "termo_heated_today", False):
+                            days_since_60 = 0
+                            if hours_since_60 is None and getattr(self, "termo_end_time_str", ""):
+                                try:
+                                    end_dt = datetime.datetime.strptime(f"{self.current_day_str} {self.termo_end_time_str}", "%Y-%m-%d %H:%M")
+                                    if MADRID_TZ:
+                                        ts = end_dt.replace(tzinfo=MADRID_TZ).timestamp()
+                                    else:
+                                        ts = end_dt.timestamp()
+                                    hours_since_60 = round((now - ts) / 3600.0, 1)
+                                except Exception:
+                                    pass
+
+                        termo_payload = dict(self.termo_status)
+                        termo_payload.update({
+                            "temp_c": round(getattr(self, "termo_est_temp", 60.0), 1),
+                            "kwh_today": round(self.termo_kwh_today, 2),
+                            "start_time": getattr(self, "termo_start_time_str", ""),
+                            "end_time": getattr(self, "termo_end_time_str", ""),
+                            "active_mins": int(round(getattr(self, "termo_active_seconds_today", 0.0) / 60.0)),
+                            "is_heating": getattr(self, "termo_currently_heating", False),
+                            "last_heated_date": getattr(self, "termo_last_heated_date", ""),
+                            "last_60_ts": getattr(self, "termo_last_60_ts", None),
+                            "days_since_60": days_since_60,
+                            "hours_since_60": hours_since_60,
+                            "timestamp": now
+                        })
+                        self.mqtt_client.publish("caseta/termo", json.dumps({"value": termo_payload}), retain=True)
+                        self.mqtt_client.publish_to_portal("caseta/termo", json.dumps({"value": termo_payload}), retain=True)
+
+                    if self.doble_status:
+                        doble_payload = dict(self.doble_status)
+                        doble_payload.update({
+                            "kwh_today": round(self.doble_kwh_today, 2),
+                            "timestamp": now
+                        })
+                        self.mqtt_client.publish("caseta/endoll_doble", json.dumps({"value": doble_payload}), retain=True)
+                        self.mqtt_client.publish_to_portal("caseta/endoll_doble", json.dumps({"value": doble_payload}), retain=True)
             except Exception:
                 pass
 
@@ -1377,373 +934,17 @@ class CasetaGuardian:
             self.last_checkpoint_save_time = now
             self.save_daily_stats()
 
-    def evaluate_termo_surplus(self, now_madrid):
-        """Gestiona l'engegada automàtica del Termo Elèctric (Desviador d'Excedents Solar) i Arbitratge P3."""
-        now = time.time()
-        current_hour = now_madrid.hour
-        current_minute = now_madrid.minute
-        time_decimal = current_hour + (current_minute / 60.0)
-
-        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
-        is_on = self.termo_status.get("is_on", False) if self.termo_status else False
-
-        # 🚨 ESCUT D'EMERGÈNCIA: Apagada de Xarxa Exterior / Xarxa Caiguda (<185V o desconnectada)
-        grid_present = (getattr(self, "grid_v", 0.0) >= 185.0) and (getattr(self, "grid_status", "") != "Sense Xarxa (Apagada)")
-        if not grid_present:
-            if is_on:
-                self.send_termo_tuya_command(
-                    power=False,
-                    reason="🚨 ESCUT APAGADA: Xarxa elèctrica caiguda (<185V) -> Termo tallat immediatament per preservar la bateria!"
-                )
-                self.send_notification(
-                    "🚨 Escut Apagada: Termo Tallat",
-                    "S'ha detectat tall de xarxa elèctrica. Termo apagat a l'instant per protegir la Pylontech.",
-                    "high",
-                    "warning"
-                )
-            return
-
-        # Si el termo està encès, avaluem quan cal apagar-lo:
-        if is_on:
-            # 1. Termòstat Intern Assolit (<50W durant >2 minuts) -> Aigua calenta a 60ºC
-            if termo_p < 50.0:
-                if self.termo_low_power_start_time is None:
-                    self.termo_low_power_start_time = now
-                elif now - self.termo_low_power_start_time >= 120.0:
-                    self.send_termo_tuya_command(
-                        power=False,
-                        reason="♨️ Termòstat Ariston Assolit: Consum <50W durant >2 min -> Aigua calenta a 60ºC!"
-                    )
-                    self.send_notification(
-                        "♨️ Aigua Calenta a 60ºC Assolida",
-                        f"El termo ha completat el cicle tèrmic ({termo_p:.0f}W). Dipòsit a 60ºC!",
-                        "default",
-                        "bath"
-                    )
-                    self.termo_heated_today = True
-                    self.termo_est_temp = 60.0
-                    self.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
-                    self.termo_low_power_start_time = None
-                    return
-            else:
-                self.termo_low_power_start_time = None
-
-            # 2. Pausa per Bateria Caiguda (<65%)
-            if self.soc < 65.0:
-                self.send_termo_tuya_command(
-                    power=False,
-                    reason=f"⏸️ Pausa de Seguretat: Bateria ha baixat al {self.soc:.1f}% (<65%)"
-                )
-                return
-
-            # 3. Fi de la Finestra Matinal (passades les 06:30h per evitar càrregues coincidents amb esmorzar a les 06:45h)
-            if 6.5 <= time_decimal < 9.0:
-                self.send_termo_tuya_command(
-                    power=False,
-                    reason="🕒 Fi Finestra Matinada (06:30h): Apagat preventiu abans de l'esmorzar (cafetera/microones)"
-                )
-                return
-
-            # 4. Fi de la Finestra d'Excedents Solars (passades les 16:00h)
-            if time_decimal >= 16.0:
-                self.send_termo_tuya_command(
-                    power=False,
-                    reason="🕒 Fi Finestra d'Excedents Solars (16:00h)"
-                )
-                return
-
-        # Si el termo està apagat i encara no ha completat la càrrega d'avui:
-        elif not self.termo_heated_today and not getattr(self, "termo_cut_off_today", False):
-            today_est = getattr(self, "today_kwh_est", 5.0)
-            urgent_heating = (getattr(self, "termo_est_temp", 60.0) < 42.0) or (getattr(self, "termo_status", {}).get("days_since_60", 0) or 0) >= 2
-
-            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:30h) amb xarxa sana i bateria recuperant-se (>=70% o rescat >=65%)
-            soc_ok_matinada = (self.soc >= 70.0) or (urgent_heating and self.soc >= 65.0)
-            if 4.0 <= time_decimal < 6.5 and grid_present and soc_ok_matinada:
-                # Pre-rampa D-Bus a 800W per evitar descàrrega brusca de bateria
-                try:
-                    import dbus
-                    bus = dbus.SystemBus()
-                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
-                    obj.SetValue(dbus.Double(800.0), dbus_interface="com.victronenergy.BusItem")
-                    self.last_grid_setpoint = 800.0
-                    log.info("🔌 [PRE-RAMPA] Grid Setpoint a 800W per a encesa matinal P3...")
-                except Exception as e:
-                    log.debug(f"Error pre-rampa D-Bus: {e}")
-
-                motiu_extra = " [Rescat Aigua Freda/Antillegionel·la]" if urgent_heating else ""
-                self.send_termo_tuya_command(
-                    power=True,
-                    reason=f"🌙 Matinada Vall P3{motiu_extra} ({now_madrid.strftime('%H:%M')}h): Encesa a 0.08 €/kWh amb Xarxa Activa ({self.grid_v:.0f}V) i Bateria {self.soc:.0f}%"
-                )
-                self.send_notification(
-                    f"🌙 Termo Engegat a la Matinada (Vall P3){motiu_extra}",
-                    f"Calfant aigua a 60ºC en horari super-econòmic (0.08 €/kWh). Xarxa activa ({self.grid_v:.0f}V) i bateria al {self.soc:.0f}%!",
-                    "default",
-                    "moon"
-                )
-                return
-
-            # ☀️ CAS B: Excedents Solars Diürns (09:00h - 16:00h): SoC >= 80.0% i Sol Huawei >= 500W (o Bateria Plena >=88% si rescat)
-            soc_ok_diurn = (self.soc >= 80.0 and self.pv_p >= 500.0) or (urgent_heating and self.soc >= 88.0 and self.pv_p >= 150.0)
-            if 9.0 <= time_decimal < 16.0 and soc_ok_diurn:
-                if today_est >= 5.0:
-                    pre_target = 200.0
-                elif today_est >= 3.5:
-                    pre_target = 400.0
-                else:
-                    pre_target = 800.0
-
-                try:
-                    import dbus
-                    bus = dbus.SystemBus()
-                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
-                    obj.SetValue(dbus.Double(pre_target), dbus_interface="com.victronenergy.BusItem")
-                    self.last_grid_setpoint = pre_target
-                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {pre_target:.0f}W abans d'engegar el Termo per excedents solars...")
-                except Exception as e:
-                    log.warning(f"Error establint pre-rampa a D-Bus: {e}")
-
-                motiu_b = f"☀️ Excedent Solar: SoC {self.soc:.1f}% >= 80% i Sol {self.pv_p:.0f}W >= 500W -> Encesa Termo" if self.pv_p >= 500.0 else f"☀️ Rescat Diürn Bateria Plena: SoC {self.soc:.1f}% i Sol {self.pv_p:.0f}W -> Encesa Termo"
-                self.send_termo_tuya_command(
-                    power=True,
-                    reason=motiu_b
-                )
-                self.send_notification(
-                    "♨️ Termo Engegat per Excedents Solars",
-                    f"Bateria al {self.soc:.1f}% i Sol a {self.pv_p:.0f}W. Escalfant aigua de franc!",
-                    "default",
-                    "sun"
-                )
-
-    def evaluate_state_machine(self, now_madrid=None):
-        now = time.time()
-        if now_madrid is None:
-            now_madrid = get_madrid_now()
-
-        # ☀️ Avaluació del Desviador d'Excedents Solar per al Termo
-        self.evaluate_termo_surplus(now_madrid)
-
-        # 🚨 ESGGLO 1 (SoC < 65%): Tall incondicional del Termo Elèctric per preservar càrrega
-        if 0 < self.soc < 65.0 and self.termo_status.get("is_on", False):
-            self.send_termo_tuya_command(power=False, reason="♨️ Escut SoC: Bateria <65% -> Apagat incondicional del Termo")
-
-        # 🚨 ESGGLO 2 (SoC < 60%): Apagat preventiu de l'Aire Condicionat
-        if 0 < self.soc < 60.0 and self.ac_current_power != 0:
-            self.send_ac_tuya_command(power=0, reason="❄️ Escut SoC: Bateria <60% -> Apagat de l'AC")
-
-        # 🚨 ESGGLO 3 (SoC < 50%): Tall Crític de Cuina per blindar >12h de reserva SAI
-        if 0 < self.soc < 50.0:
-            if self.doble_status.get("ch1_on", False):
-                self.send_doble_tuya_command(1, False, reason="🚨 Blindatge SAI: Bateria <50% -> Desconnexió Microones/Torradora")
-            if self.doble_status.get("ch2_on", False):
-                self.send_doble_tuya_command(2, False, reason="🚨 Blindatge SAI: Bateria <50% -> Desconnexió Cafetera")
-        elif self.soc >= 65.0:
-            self.termo_cut_off_today = False
-
-        # ⚡ PROTECCIÓ C-RATE A: Pic de Sobrecàrrega 1C (>=70A / ~3.5kW) en Cascada
-        if self.bat_i <= -70.0:
-            if self.c1_discharge_start_time is None:
-                self.c1_discharge_start_time = now
-            dt_c1 = now - self.c1_discharge_start_time
-
-            # Fase 1 (als 5s): Apaguem NOMÉS el Termo primer (-1.280W) per salvar el café/AC
-            if dt_c1 >= 5.0 and self.termo_status.get("is_on", False):
-                self.send_termo_tuya_command(power=False, reason="⚡ Tall 1C Cascada (Fase 1 - 5s): Desconnexió Termo (-1.280W)")
-                log.info("⚡ [CASCADA 1C] Termo apagat per alleujar sobrecàrrega i salvar el café/AC.")
-
-            # Fase 2 (als 15s): Si encara continua >70A, apaguem l'AC (-850W)
-            if dt_c1 >= 15.0 and self.ac_current_power != 0:
-                self.send_ac_tuya_command(power=0, reason="⚡ Tall 1C Cascada (Fase 2 - 15s): Desconnexió AC (-850W)")
-
-            # Fase 3 (als 30s): Últim recurs si continua la sobrecàrrega extrema
-            if dt_c1 >= 30.0:
-                if self.doble_status.get("ch1_on", False):
-                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 1C Cascada (Fase 3 - 30s): Desconnexió Microones/Torradora")
-                if self.doble_status.get("ch2_on", False):
-                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 1C Cascada (Fase 3 - 30s): Desconnexió Cafetera")
-                self.send_notification(
-                    "🚨 Sobrecorrent Crític Bateria 1C",
-                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=70A) durant >30s! S'ha completat la cascada de desconnexió per protegir les cel·les LiFePO4.",
-                    "high",
-                    "warning"
-                )
-                self.c1_discharge_start_time = None
-        else:
-            self.c1_discharge_start_time = None
-
-        # ⚡ PROTECCIÓ C-RATE B: Sobrecàrrega Sostinguda 0.5C (>=34A / ~1.7kW) en Cascada
-        if self.bat_i <= -34.0:
-            if self.c05_discharge_start_time is None:
-                self.c05_discharge_start_time = now
-            dt_c05 = now - self.c05_discharge_start_time
-
-            # Fase 1 (als 30s): Apaguem Termo
-            if dt_c05 >= 30.0 and self.termo_status.get("is_on", False):
-                self.send_termo_tuya_command(power=False, reason="⚡ Tall 0.5C Cascada (30s): Desconnexió Termo")
-
-            # Fase 2 (als 120s / 2 min): Apaguem AC
-            if dt_c05 >= 120.0 and self.ac_current_power != 0:
-                self.send_ac_tuya_command(power=0, reason="⚡ Tall 0.5C Cascada (2 min): Desconnexió AC")
-
-            # Fase 3 (als 180s / 3 min): Apaguem Cuina si la descàrrega persisteix
-            if dt_c05 >= 180.0:
-                if self.doble_status.get("ch1_on", False):
-                    self.send_doble_tuya_command(1, False, reason="🚨 Tall 0.5C Cascada (3 min): Desconnexió Microones/Torradora")
-                if self.doble_status.get("ch2_on", False):
-                    self.send_doble_tuya_command(2, False, reason="🚨 Tall 0.5C Cascada (3 min): Desconnexió Cafetera")
-                self.send_notification(
-                    "🚨 Sobrecàrrega Sostinguda Bateria 0.5C",
-                    f"Descàrrega a {abs(self.bat_i):.1f}A (>=34A) durant >3 minuts! Protecció tèrmica aplicada.",
-                    "high",
-                    "warning"
-                )
-                self.c05_discharge_start_time = None
-        else:
-            self.c05_discharge_start_time = None
-
-        if self.vebus_mode != 2 and self.grid_v < 190.0:
-            if self.low_voltage_start_time is None:
-                self.low_voltage_start_time = now
-            elif now - self.low_voltage_start_time >= 120.0:
-                self.send_notification("🚨 Tensió Xarxa Crítica", f"Tensió rural a {self.grid_v:.1f}V (<190V durant >2 minuts). Vigilant estabilitat!", "high", "warning")
-                self.low_voltage_start_time = now
-        else:
-            self.low_voltage_start_time = None
-
-        if self.vebus_mode == 2:
-            if self.bat_i < -15.0:
-                if self.high_discharge_start_time is None:
-                    self.high_discharge_start_time = now
-                elif now - self.high_discharge_start_time >= 5.0:
-                    self.set_multiplus_mode(3, f"Descàrrega alta ({abs(self.bat_i):.1f}A > 15.0A per >5s)")
-                    self.high_discharge_start_time = None
-                    return
-            else:
-                self.high_discharge_start_time = None
-
-            if self.soc < 70.0:
-                self.set_multiplus_mode(3, f"Bateria ha baixat del sòl segur ({self.soc:.1f}% < 70.0%)")
-                return
-
-            if self.pv_p < 50.0 and self.ac_loads > 300.0 and self.soc <= 85.0:
-                self.set_multiplus_mode(3, f"Sol esgotat ({self.pv_p:.0f}W) i consum a casa ({self.ac_loads:.0f}W)")
-                return
-
-        elif self.vebus_mode == 3:
-            if self.grid_p is not None and self.grid_p < -50.0 and self.soc >= 88.0:
-                if self.export_start_time is None:
-                    self.export_start_time = now
-                    log.info(f"⚠️ Detectat abocament de {abs(self.grid_p):.0f}W amb SoC {self.soc:.1f}%. Iniciant compte enrere de 30s...")
-                elif now - self.export_start_time >= 30.0:
-                    self.set_multiplus_mode(2, f"Abocament sostingut de {abs(self.grid_p):.0f}W durant >30s amb SoC {self.soc:.1f}%")
-                    self.export_start_time = None
-                    return
-            else:
-                self.export_start_time = None
-
-    def poll_dbus_telemetry(self):
-        """Lectura directa de telemetria des de D-Bus a Cerbo GX (independent de keepalive MQTT)."""
-        now = time.time()
-        if now - getattr(self, "last_dbus_poll_time", 0.0) < 5.0:
-            return
-        self.last_dbus_poll_time = now
-        try:
-            import dbus
-            bus = dbus.SystemBus()
-            # 1. Bateria SoC, Tensió, Corrent i Potència
-            try:
-                soc_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Soc").GetValue()
-                if soc_val is not None:
-                    self.soc = float(soc_val)
-            except Exception:
-                pass
-            try:
-                v_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Voltage").GetValue()
-                if v_val is not None:
-                    self.bat_v = float(v_val)
-            except Exception:
-                pass
-            try:
-                i_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Current").GetValue()
-                if i_val is not None:
-                    self.bat_i = float(i_val)
-            except Exception:
-                pass
-            try:
-                p_val = bus.get_object("com.victronenergy.system", "/Dc/Battery/Power").GetValue()
-                if p_val is not None:
-                    self.bat_p = float(p_val)
-            except Exception:
-                pass
-            # 2. Xarxa Tensió i Potència
-            try:
-                grid_v = bus.get_object("com.victronenergy.vebus.ttyS4", "/Ac/ActiveIn/L1/V").GetValue()
-                if grid_v is not None:
-                    self.grid_v = float(grid_v)
-            except Exception:
-                pass
-            try:
-                grid_p = bus.get_object("com.victronenergy.system", "/Ac/Grid/L1/Power").GetValue()
-                if grid_p is not None:
-                    self.grid_p = float(grid_p)
-            except Exception:
-                pass
-            # 3. Consum de la Caseta
-            try:
-                ac_l = bus.get_object("com.victronenergy.system", "/Ac/Consumption/L1/Power").GetValue()
-                if ac_l is not None:
-                    self.ac_loads = float(ac_l)
-            except Exception:
-                pass
-            # 4. Sol Generat (Inversor Huawei en AC-Out)
-            try:
-                pv = bus.get_object("com.victronenergy.system", "/Ac/PvOnOutput/L1/Power").GetValue()
-                if pv is not None:
-                    pv_f = float(pv)
-                    self.pv_p = 0.0 if (-25.0 <= pv_f <= 20.0) else pv_f
-            except Exception:
-                pass
-            # 5. Cel·les Pylontech i SOH
-            try:
-                bms_bus = bus.get_object("com.victronenergy.battery.socketcan_can1", "/System/MaxCellVoltage")
-                c_max = bms_bus.GetValue()
-                c_min = bus.get_object("com.victronenergy.battery.socketcan_can1", "/System/MinCellVoltage").GetValue()
-                if c_max is not None and c_min is not None:
-                    self.cell_max = float(c_max)
-                    self.cell_min = float(c_min)
-                    delta_mv = (self.cell_max - self.cell_min) * 1000.0
-                    if delta_mv > self.max_cell_delta_today:
-                        self.max_cell_delta_today = delta_mv
-            except Exception:
-                pass
-            try:
-                soh_val = bus.get_object("com.victronenergy.battery.socketcan_can1", "/Soh").GetValue()
-                if soh_val is not None:
-                    self.soh = float(soh_val)
-            except Exception:
-                pass
-            # 6. Mode MultiPlus
-            try:
-                mode_val = bus.get_object("com.victronenergy.vebus.ttyS4", "/Mode").GetValue()
-                if mode_val is not None:
-                    self.vebus_mode = int(mode_val)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
     def on_mqtt_message(self, client, userdata, msg):
         try:
             parts = msg.topic.split("/")
             # Blindatge del Portal ID: només actualitzar si és un missatge de telemetria N/ de 12 caràcters hexadecimals
             if parts[0] == "N" and len(parts) > 1 and len(parts[1]) == 12:
                 self.portal_id = parts[1]
-                
+
             raw_payload = json.loads(msg.payload.decode())
             val = raw_payload.get("value") if isinstance(raw_payload, dict) else raw_payload
             topic = msg.topic
-            
+
             if topic.endswith("/battery/512/Soc") or topic.endswith("/system/0/Dc/Battery/Soc"):
                 self.soc = float(val) if val is not None else self.soc
             elif topic.endswith("/battery/512/Soh") or topic.endswith("/system/0/Dc/Battery/Soh"):
@@ -1758,7 +959,7 @@ class CasetaGuardian:
                 self.cell_max = float(val) if val is not None else self.cell_max
             elif topic.endswith("/battery/512/System/MinCellVoltage"):
                 self.cell_min = float(val) if val is not None else self.cell_min
-                
+
             elif ("/pvinverter/" in topic and topic.endswith("/Ac/Power")) or topic.endswith("/pvinverter/31/Ac/Power") or topic.endswith("/system/0/Ac/PvOnOutput/L1/Power") or topic.endswith("/system/0/Ac/PvOnOutput/Power") or topic.endswith("/system/0/Dc/Pv/Power"):
                 raw_pv = float(val) if val is not None else self.pv_p
                 # Filtre de soroll d'inversor Huawei en repòs: entre -25W i +20W és 0W real
@@ -1782,7 +983,7 @@ class CasetaGuardian:
                 s2 = self.clima_sensors.get("sensor_2") or {}
                 if s2.get("presencia"):
                     self.last_presence_seen_time = time.time()
-                
+
         except Exception:
             pass
 
@@ -1800,51 +1001,38 @@ class CasetaGuardian:
             sys.exit(0)
         signal.signal(signal.SIGTERM, sig_handler)
         signal.signal(signal.SIGINT, sig_handler)
-        
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        self.client.on_message = self.on_mqtt_message
-        
-        try:
-            self.client.connect(CERBO_IP, 1883, 60)
-        except Exception as e:
-            log.error(f"Error fatal connectant al broker MQTT del Cerbo GX ({CERBO_IP}): {e}")
+
+        if not self.mqtt_client.connect(self.on_mqtt_message):
             return
-            
-        # Subscripcions quirúrgiques per eliminar el 70% del soroll MQTT innecessari
-        self.client.subscribe("N/+/battery/512/#")
-        self.client.subscribe("N/+/pvinverter/#")
-        self.client.subscribe("N/+/system/0/#")
-        self.client.subscribe("N/+/vebus/276/#")
-        self.client.subscribe("caseta/#")
-        self.client.loop_start()
-        
+
         self.sync_cerbo_min_soc()
-        self.update_energy_forecast()
+        self.forecast.update_forecast()
         self.update_inforatge()
-        
+
         log.info("🛡️ Guardià en línia i vigilant telemetria en directe!")
-        
+
         while self.running:
             try:
                 now = time.time()
                 now_madrid = get_madrid_now()
-                
-                if now - self.last_keepalive_time >= 30:
-                    self.client.publish(f"R/{self.portal_id}/keepalive", "")
-                    self.last_keepalive_time = now
-                    
+
+                self.mqtt_client.send_keepalive()
                 self.sync_cerbo_min_soc(now_madrid)
                 self.sync_grid_setpoint()
-                self.update_energy_forecast()
+                self.forecast.update_forecast()
                 self.update_inforatge()
                 self.update_ac_status()
-                self.update_termo_status()
-                self.update_doble_status()
+                self.termo_status, self.last_termo_update_time, self.last_termo_calc_time = self.tuya.update_termo_status(
+                    self.termo_status, self.last_termo_update_time, self.last_termo_calc_time
+                )
+                self.doble_status, self.last_doble_update_time, self.last_doble_calc_time = self.tuya.update_doble_status(
+                    self.doble_status, self.last_doble_update_time, self.last_doble_calc_time
+                )
                 self.update_energy_integrals(now_madrid)
-                self.poll_dbus_telemetry()
-                self.evaluate_state_machine(now_madrid)
+                self.dbus_telemetry.poll_telemetry(self)
+                self.state_machine.evaluate_state_machine(self, now_madrid)
                 self.evaluate_climate_control(now_madrid)
-                
+
                 time.sleep(1.0)
             except KeyboardInterrupt:
                 log.info("Aturant Caseta Guardian...")
@@ -1852,10 +1040,10 @@ class CasetaGuardian:
             except Exception as e:
                 log.error(f"Error al bucle principal: {e}")
                 time.sleep(2.0)
-                
+
         self.save_daily_stats()
-        self.client.loop_stop()
-        self.client.disconnect()
+        self.mqtt_client.disconnect()
+
 
 if __name__ == "__main__":
     guardian = CasetaGuardian()

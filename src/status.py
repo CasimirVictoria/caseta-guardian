@@ -466,31 +466,46 @@ def main():
             act_mins = mqtt_termo.get("active_mins", 0)
             is_heating = mqtt_termo.get("is_heating", False) or (p_w >= 100.0)
             days_60 = mqtt_termo.get("days_since_60")
+            hours_60 = mqtt_termo.get("hours_since_60")
+            if hours_60 is None and mqtt_termo.get("last_60_ts"):
+                try:
+                    hours_60 = round((time.time() - float(mqtt_termo["last_60_ts"])) / 3600.0, 1)
+                except Exception:
+                    pass
+            if hours_60 is None and days_60 is not None:
+                hours_60 = round(days_60 * 24.0, 1)
             temp_c = mqtt_termo.get("temp_c", 60.0)
+
+            kwh_str = f" | {BOLD}{kwh:.2f} kWh{RESET}"
 
             if is_heating:
                 time_str = f"des de les {t_start}h" if t_start else "ara"
-                termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Calfant {time_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
-            elif t_start and kwh > 0.3:
+                termo_str = f"{GREEN}♨️ Actiu ({p_w:.0f} W){RESET} [{GREEN}Calfant {time_str}{RESET}{kwh_str}]"
+            elif t_start and kwh > 0.1:
                 duration_str = f" ({act_mins} min)" if act_mins > 0 else ""
                 end_str = f"{t_end}h" if t_end else "completat"
-                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{GREEN}Calfat hui {t_start}h - {end_str}{duration_str}{RESET} | {BOLD}{kwh:.2f} kWh{RESET}]"
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{GREEN}Calfat hui {t_start}h - {end_str}{duration_str}{RESET}{kwh_str}]"
             elif is_on and p_w > 0:
-                termo_str = f"{CYAN}♨️ Preparat ({p_w:.0f} W){RESET} [{CYAN}Endoll Encès{RESET}]"
+                termo_str = f"{CYAN}♨️ Preparat ({p_w:.0f} W){RESET} [{CYAN}Endoll Encès{RESET}{kwh_str}]"
             elif is_on:
-                termo_str = f"{CYAN}♨️ Preparat (0 W){RESET} [{CYAN}Endoll Encès{RESET}]"
+                termo_str = f"{CYAN}♨️ Preparat (0 W){RESET} [{CYAN}Endoll Encès{RESET}{kwh_str}]"
             else:
-                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}]"
+                termo_str = f"{DIM}⚪ En Repòs (0 W){RESET} [{DIM}Apagat{RESET}{kwh_str}]"
             print(box_line(f"   • {BOLD}Termo Elèctric:{RESET}        {termo_str}"))
 
-            # Línia dedicada per a la Temperatura Estimada i Seguiment 60ºC
-            if days_60 == 0:
-                d_info = f"{GREEN}{BOLD}Hui (0 dies){RESET}"
-            elif days_60 == 1:
-                d_info = f"{CYAN}{BOLD}Ahir (Fa 1 dia){RESET}"
-            elif days_60 is not None and days_60 > 1:
-                d_col = YELLOW if days_60 <= 3 else RED
-                d_info = f"{d_col}{BOLD}Fa {days_60} dies{RESET}"
+            # Línia dedicada per a la Temperatura Estimada i Seguiment 60ºC en hores
+            if hours_60 is not None:
+                if hours_60 < 1.0:
+                    mins = max(1, int(round(hours_60 * 60.0)))
+                    d_info = f"{GREEN}{BOLD}Fa {mins} min{RESET}"
+                elif hours_60 <= 12.0:
+                    d_info = f"{GREEN}{BOLD}Fa {hours_60:.1f} h{RESET}"
+                elif hours_60 <= 24.0:
+                    d_info = f"{CYAN}{BOLD}Fa {hours_60:.1f} h{RESET}"
+                elif hours_60 <= 48.0:
+                    d_info = f"{YELLOW}{BOLD}Fa {hours_60:.1f} h{RESET}"
+                else:
+                    d_info = f"{RED}{BOLD}Fa {hours_60:.0f} h{RESET}"
             else:
                 d_info = f"{DIM}Sense dades{RESET}"
 
@@ -506,13 +521,13 @@ def main():
 
             p_ch1 = f" ({p_w:.0f} W)" if ch1_on and p_w > 10 else (" (0 W)" if ch1_on else "")
             p_ch2 = f" ({p_w:.0f} W)" if ch2_on and not ch1_on and p_w > 10 else (" (0 W)" if ch2_on else "")
-            kwh_str = f" | {BOLD}{kwh:.2f} kWh{RESET}" if kwh > 0.05 else ""
 
             ch1_str = f"{GREEN}Encès{p_ch1}{RESET}" if ch1_on else f"{DIM}Apagat{RESET}"
             ch2_str = f"{GREEN}Encès{p_ch2}{RESET}" if ch2_on else f"{DIM}Apagat{RESET}"
 
-            print(box_line(f"   • {BOLD}Cuina (Microones/Torr.):{RESET}  [{ch1_str}]{kwh_str}"))
+            print(box_line(f"   • {BOLD}Cuina (Microones/Torr.):{RESET}  [{ch1_str}]"))
             print(box_line(f"   • {BOLD}Cuina (Cafetera):{RESET}        [{ch2_str}]"))
+            print(box_line(f"     └─ {DIM}Consum Endoll Cuina:{RESET}   {BOLD}{kwh:.2f} kWh{RESET}"))
 
     print("└" + "─" * (BOX_WIDTH + 2) + "┘")
     print(f"  Guardià Natiu (caseta-guardian): {GREEN}🟢 ACTIU I VIGILANT A CERBO GX (Venus OS){RESET}")
