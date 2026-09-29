@@ -866,6 +866,11 @@ class CasetaGuardian:
                 "relay_switch_count": self.relay_switch_count,
                 "max_cell_delta_today": round(self.max_cell_delta_today, 1),
                 "soh_bms": round(self.soh, 0),
+                "pv_power_w": round(self.pv_p, 1),
+                "ac_loads_w": round(self.ac_loads, 1),
+                "grid_power_w": round(self.grid_p, 1),
+                "grid_voltage_v": round(self.grid_v, 1),
+                "vebus_mode": self.vebus_mode,
                 "timestamp": now
             }
             try:

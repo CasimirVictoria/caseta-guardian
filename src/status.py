@@ -144,10 +144,21 @@ def get_telemetry():
     while time.time() - start < 2.5:
         time.sleep(0.02)
         portal = found_portal[0]
+        has_consumption = (
+            f"N/{portal}/system/0/Ac/Consumption/L1/Power" in data
+            or f"N/{portal}/system/0/Ac/ConsumptionOnOutput/L1/Power" in data
+            or f"N/{portal}/vebus/276/Ac/Out/L1/P" in data
+            or f"N/{portal}/vebus/276/Ac/Out/P" in data
+        )
+        has_vebus_mode = f"N/{portal}/vebus/276/Mode" in data
+        has_pv = any(("/pvinverter/" in k and k.endswith("/Ac/Power")) for k in data) or (f"N/{portal}/system/0/Ac/PvOnOutput/L1/Power" in data)
         if (
             portal
             and f"N/{portal}/battery/512/Soc" in data
             and f"N/{portal}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit" in data
+            and has_consumption
+            and has_vebus_mode
+            and has_pv
             and mqtt_stats[0] is not None
             and mqtt_forecast[0] is not None
             and mqtt_clima[0] is not None
@@ -277,7 +288,16 @@ def main():
     pylon_t = data.get(f"N/{portal}/battery/512/Dc/0/Temperature")
     cell_min_v = data.get(f"N/{portal}/battery/512/System/MinCellVoltage")
     cell_max_v = data.get(f"N/{portal}/battery/512/System/MaxCellVoltage")
-    raw_pv = data.get(f"N/{portal}/pvinverter/20/Ac/Power") or data.get(f"N/{portal}/system/0/Ac/PvOnOutput/L1/Power") or 0.0
+    pv_candidates = [
+        v for k, v in data.items()
+        if "/pvinverter/" in k and k.endswith("/Ac/Power") and v is not None
+    ]
+    raw_pv = pv_candidates[0] if pv_candidates else (
+        data.get(f"N/{portal}/system/0/Ac/PvOnOutput/L1/Power")
+        or data.get(f"N/{portal}/system/0/Ac/PvOnOutput/Power")
+        or (daily_stats.get("pv_power_w") if daily_stats else None)
+        or 0.0
+    )
     # Filtre de soroll d'inversor Huawei en repòs: entre -25W i +20W és 0W real
     pv_p = 0.0 if -25.0 <= raw_pv <= 20.0 else raw_pv
     ac_loads = (
@@ -285,6 +305,7 @@ def main():
         or data.get(f"N/{portal}/system/0/Ac/ConsumptionOnOutput/L1/Power")
         or data.get(f"N/{portal}/vebus/276/Ac/Out/L1/P")
         or data.get(f"N/{portal}/vebus/276/Ac/Out/P")
+        or (daily_stats.get("ac_loads_w") if daily_stats else None)
         or 0.0
     )
     freq = data.get(f"N/{portal}/vebus/276/Ac/Out/L1/F") or 50.0
@@ -294,10 +315,18 @@ def main():
         or data.get(f"N/{portal}/system/0/Ac/ActiveIn/L1/Power")
         or data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/P")
         or data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/P")
+        or (daily_stats.get("grid_power_w") if daily_stats else None)
         or 0.0
     )
-    grid_v = data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/V") or data.get(f"N/{portal}/vebus/276/Ac/Out/L1/V") or 230.0
+    grid_v = (
+        data.get(f"N/{portal}/vebus/276/Ac/ActiveIn/L1/V")
+        or data.get(f"N/{portal}/vebus/276/Ac/Out/L1/V")
+        or (daily_stats.get("grid_voltage_v") if daily_stats else None)
+        or 230.0
+    )
     multi_mode = data.get(f"N/{portal}/vebus/276/Mode")
+    if multi_mode is None and daily_stats:
+        multi_mode = daily_stats.get("vebus_mode")
     
     if soc is None:
         print(f"{RED}No s'han pogut llegir les dades de bateria.{RESET}\n")
