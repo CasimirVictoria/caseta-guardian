@@ -297,6 +297,7 @@ class CasetaGuardian:
                     self.termo_start_time_str = str(data.get("termo_start_time_str", ""))
                     self.termo_end_time_str = str(data.get("termo_end_time_str", ""))
                     self.termo_active_seconds_today = float(data.get("termo_active_seconds_today", 0.0))
+                    self.termo_currently_heating = bool(data.get("termo_currently_heating", False))
                     if self.termo_last_60_ts is None and self.termo_heated_today and self.termo_end_time_str:
                         try:
                             end_dt = datetime.datetime.strptime(f"{self.current_day_str} {self.termo_end_time_str}", "%Y-%m-%d %H:%M")
@@ -733,6 +734,7 @@ class CasetaGuardian:
             "termo_start_time_str": getattr(self, "termo_start_time_str", ""),
             "termo_end_time_str": getattr(self, "termo_end_time_str", ""),
             "termo_active_seconds_today": round(getattr(self, "termo_active_seconds_today", 0.0), 0),
+            "termo_currently_heating": getattr(self, "termo_currently_heating", False),
             "doble_kwh_today": round(getattr(self, "doble_kwh_today", 0.0), 2),
             "ac_manual_off_time": getattr(self, "ac_manual_off_time", None),
             "ac_manual_on_time": getattr(self, "ac_manual_on_time", None),
@@ -822,20 +824,31 @@ class CasetaGuardian:
         # Integració de consum elèctric dels endolls Tuya (Termo i Cuina) en memòria RAM (ZERO desgast Flash)
         if self.termo_status:
             termo_p = float(self.termo_status.get("power_w", 0.0))
-            if termo_p >= 5.0:
+            is_termo_on = bool(self.termo_status.get("is_on", False))
+            is_heating_now = (termo_p >= 50.0) and is_termo_on
+
+            if is_heating_now:
                 kwh_inc = (termo_p / 1000.0) * hours
                 self.termo_kwh_today += kwh_inc
                 self.termo_active_seconds_today += dt
-                self.termo_currently_heating = True
-                if not self.termo_start_time_str:
+
+                # Transició a calfant: inici de nou cicle o sessió de calfament
+                if not self.termo_currently_heating:
+                    self.termo_currently_heating = True
                     self.termo_start_time_str = now_madrid.strftime("%H:%M")
+                    self.termo_end_time_str = ""
+                    log.info(f"♨️ [TERMO] Inici de cicle de calfament a les {self.termo_start_time_str} ({termo_p:.0f} W)")
+
                 # Model Físic Calorimètric (100L): +8.605 ºC per kWh injectat
                 # Límit 59.5 ºC per càlcul d'energia (els 60.0 ºC només es fixen si el termòstat Ariston talla a <50W)
                 self.termo_est_temp = min(59.5, self.termo_est_temp + (kwh_inc * 8.605))
             else:
-                self.termo_currently_heating = False
-                if self.termo_start_time_str and not self.termo_end_time_str and self.termo_kwh_today > 0.1:
+                # Transició de calfant a repòs
+                if self.termo_currently_heating:
+                    self.termo_currently_heating = False
                     self.termo_end_time_str = now_madrid.strftime("%H:%M")
+                    log.info(f"⚪ [TERMO] Fi del cicle de calfament a les {self.termo_end_time_str}")
+
                 # Dissipació tèrmica per temps transcorregut:
                 # El termo perd ~0.35 ºC / hora d'aïllament mentre està apagat/repòs (fins a temp ambient 20 ºC)
                 self.termo_est_temp = max(20.0, self.termo_est_temp - (hours * 0.35))
