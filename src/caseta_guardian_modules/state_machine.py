@@ -103,14 +103,43 @@ class StateMachine:
         else:
             guardian.c05_discharge_start_time = None
 
-        if guardian.vebus_mode != 2 and guardian.grid_v < 190.0:
-            if guardian.low_voltage_start_time is None:
-                guardian.low_voltage_start_time = now
-            elif now - guardian.low_voltage_start_time >= 120.0:
-                self.notifications.send_notification("🚨 Tensió Xarxa Crítica", f"Tensió rural a {guardian.grid_v:.1f}V (<190V durant >2 minuts). Vigilant estabilitat!", "high", "warning")
-                guardian.low_voltage_start_time = now
+        # 🚨 Control de Baixa Tensió / Caiguda de Xarxa Rural (<190V durant >2 minuts)
+        if guardian.vebus_mode != 2:
+            if guardian.grid_v < 190.0:
+                guardian.grid_recovery_start_time = None
+                if guardian.low_voltage_start_time is None:
+                    guardian.low_voltage_start_time = now
+                elif now - guardian.low_voltage_start_time >= 120.0:
+                    if not guardian.grid_outage_notified:
+                        self.notifications.send_notification(
+                            "🚨 Tensió Xarxa Crítica",
+                            f"Tensió rural caiguda a {guardian.grid_v:.1f}V (<190V durant >2 minuts). El sistema opera en mode SAI/aïllat de seguretat.",
+                            "high",
+                            "warning"
+                        )
+                        guardian.grid_outage_notified = True
+            else:
+                guardian.low_voltage_start_time = None
+                if guardian.grid_outage_notified:
+                    if guardian.grid_v >= 200.0:
+                        if guardian.grid_recovery_start_time is None:
+                            guardian.grid_recovery_start_time = now
+                        elif now - guardian.grid_recovery_start_time >= 30.0:
+                            self.notifications.send_notification(
+                                "✅ Xarxa Elèctrica Restablida",
+                                f"La xarxa elèctrica rural s'ha restablit ({guardian.grid_v:.1f}V estable durant >30s). Sistema normalitzat!",
+                                "high",
+                                "electric_plug"
+                            )
+                            guardian.grid_outage_notified = False
+                            guardian.grid_recovery_start_time = None
+                    else:
+                        guardian.grid_recovery_start_time = None
+                else:
+                    guardian.grid_recovery_start_time = None
         else:
             guardian.low_voltage_start_time = None
+            guardian.grid_recovery_start_time = None
 
         if guardian.vebus_mode == 2:
             # ♨️ 0. RECONNEXIÓ IMMEDIATA SI EL TERMO ESTÀ ACTIU (0s d'espera per evitar cap estiró de bateria)

@@ -131,6 +131,8 @@ class CasetaGuardian:
         self.export_start_time = None
         self.high_discharge_start_time = None
         self.low_voltage_start_time = None
+        self.grid_outage_notified = False
+        self.grid_recovery_start_time = None
         self.last_mode_switch_time = 0.0
         self.last_inforatge_time = 0.0
         self.last_stats_calc_time = 0.0
