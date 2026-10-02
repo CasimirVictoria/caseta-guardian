@@ -579,6 +579,11 @@ class CasetaGuardian:
                 target = 88.0
                 phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
 
+        # 4. ⛈️ Temps Advers / Pluja / Tronades a la Tarda-Vespre (>= 16:30h sense sol i amb pluja o risc):
+        elif time_decimal >= 16.5 and (getattr(self, "rain_today", 0.0) >= 0.5 or getattr(self, "blackout_risk", 0) >= 30 or getattr(self, "grid_outage_notified", False)):
+            target = 100.0
+            phase_name = f"⛈️ Temps Advers / Pluja ({getattr(self, 'rain_today', 0.0):.1f} mm) -> 100% Blindatge SAI"
+
         # 5. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
         elif is_weekend_or_hol and time_decimal >= 18.0:
             target = 100.0
@@ -588,6 +593,20 @@ class CasetaGuardian:
         else:
             target = 85.0
             phase_name = "🌇 Tarda / Vespre Resilient (85% Màxima Seguretat & SAI)"
+
+        # 👤 Comprovació de consigna manual de l'usuari a Cerbo GX a la tarda/vespre/nit:
+        # Si l'usuari ha fixat manualment un límit superior (ex: 100% per seguretat/tronades), no el rebaixem.
+        if time_decimal >= 16.5 or time_decimal < 8.0:
+            try:
+                import dbus
+                bus = dbus.SystemBus()
+                obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/BatteryLife/MinimumSocLimit")
+                current_cerbo_soc = float(obj.GetValue())
+                if current_cerbo_soc > target:
+                    target = current_cerbo_soc
+                    phase_name = f"👤 Consigna Manual Prioritària de l'Usuari ({target:.0f}%)"
+            except Exception:
+                pass
 
         self.target_reserve_soc = target
 
