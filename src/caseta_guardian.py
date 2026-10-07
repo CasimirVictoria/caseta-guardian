@@ -614,10 +614,10 @@ class CasetaGuardian:
             max_grid_w = round(min(1050.0, max(900.0, 4.5 * grid_v_safe)))
             time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
 
-            # A. Matinada Vall P3 (04:00h - 07:00h sense sol): suport de xarxa econòmica 4.5A
-            if 4.0 <= time_decimal < 7.0:
+            # A. Vespre, Nit o Matinada (17:00h - 08:00h sense sol): suport màxim de xarxa 4.5A - 5A
+            if time_decimal >= 17.0 or time_decimal < 8.0:
                 target = max_grid_w
-                reason = f"🌙 Termo P3 Matinada ({termo_p:.0f}W) -> Setpoint {target:.0f}W (Suport Vall 4.5A)"
+                reason = f"🌙 Termo Nocturn ({termo_p:.0f}W) -> Setpoint {target:.0f}W (Suport Màxim Xarxa 4.5A)"
             else:
                 # B. Diürn: Sol prioritari, i la bateria aporta com a MÀXIM ~650 W AC (~14A DC a 49V)
                 # Tenint en compte l'eficiència del MultiPlus (~88%), 650W AC = ~740W DC (~14.8A)
