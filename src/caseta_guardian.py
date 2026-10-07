@@ -602,14 +602,20 @@ class CasetaGuardian:
 
         termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
         termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
-        is_termo_active = termo_on and termo_p >= 500.0
+        bat_i_discharge = abs(self.bat_i) if getattr(self, "bat_i", 0.0) < 0.0 else 0.0
 
-        # Resposta immediata (0s d'espera): Bypassem el throttle de 20s si el termo s'encén o s'apaga
+        # Termo actiu si Tuya reporta >=500W, o si telemetria nativa Victron veu càrrega >=1400W o descàrrega >=10A
+        is_termo_active = termo_on and (
+            termo_p >= 500.0 or
+            self.ac_loads >= 1400.0 or
+            bat_i_discharge >= 10.0
+        )
+
+        # Resposta immediata (0s d'espera): Sense throttle cada segon si termo_on o estat canviat; en repòs pur, throttle de 20s
         termo_state_changed = (is_termo_active and (self.last_grid_setpoint or 0) < 500.0) or \
                               (not is_termo_active and (self.last_grid_setpoint or 0) >= 500.0)
 
-        # Amb termo actiu, resposta immediata cada segon; en repòs, throttle de 20s
-        if not is_termo_active:
+        if not termo_on and not is_termo_active:
             if not termo_state_changed and (now - self.last_grid_setpoint_eval_time < 20):
                 return
         self.last_grid_setpoint_eval_time = now
@@ -1059,6 +1065,8 @@ class CasetaGuardian:
                     log.info("📩 [MQTT CMD] Rebut comandament manual per engegar el termo amb la seqüència segura!")
                     self.termo_surplus_done = False
                     self.termo_low_power_start_time = None
+                    self.termo_cooldown_until = 0.0
+                    self.high_discharge_start_time = None
                     self.state_machine.start_termo_safely(
                         self,
                         reason="Ordre manual d'encesa segura (MQTT)",
