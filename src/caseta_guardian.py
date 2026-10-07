@@ -500,22 +500,29 @@ class CasetaGuardian:
     def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
         now = time.time()
-        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
-        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
-        is_termo_active = termo_on and termo_p >= 500.0
-
-        # Resposta immediata (sense throttle de 120s) si el termo està actiu i el mínim soc és > 68%
-        if not (is_termo_active and (self.last_applied_min_soc or 100) > 68.0):
-            if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:
-                return
-        self.last_soc_eval_time = now
-
         if now_madrid is None:
             now_madrid = get_madrid_now()
         current_hour = now_madrid.hour
         current_minute = now_madrid.minute
         time_decimal = current_hour + (current_minute / 60.0)
         is_weekend_or_hol = self.is_holiday
+
+        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
+        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
+        bat_i_discharge = abs(self.bat_i) if getattr(self, "bat_i", 0.0) < 0.0 else 0.0
+        is_termo_active = termo_on and (
+            termo_p >= 500.0 or
+            self.ac_loads >= 1400.0 or
+            bat_i_discharge >= 10.0
+        )
+
+        # Resposta immediata (sense throttle de 120s) si el termo canvia d'estat
+        termo_needs_fast_soc = (is_termo_active and (self.last_applied_min_soc or 100) > 75.0) or \
+                               (not is_termo_active and (self.last_applied_min_soc or 100) < 100.0 and (time_decimal >= 17.0 or time_decimal < 8.0))
+        if not termo_needs_fast_soc:
+            if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:
+                return
+        self.last_soc_eval_time = now
 
         # 1. 🚨 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
         if self.blackout_risk >= 60:
@@ -545,14 +552,24 @@ class CasetaGuardian:
                 target = 88.0
                 phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
 
-        # 3. 🌙 Blindatge SAI Total (17:00h a 07:59h Madrid): 100% Reserva Nocturna & Protecció Bateria
+        # 3. 🌙 Blindatge SAI Total Nocturn (17:00h a 07:59h Madrid)
         else:
-            target = 100.0
-            phase_name = "🌙 Blindatge SAI Total Nocturn (100% Reserva & Salut Bateria)"
+            if getattr(self, "termo_night_chunk1_active", False):
+                target = 75.0
+                phase_name = "🌙 Termo Tanda 1 (01:00h) -> 75% Sòl Nocturn Bateria"
+            elif 4.0 <= time_decimal < 6.5 and is_termo_active:
+                target = 70.0
+                phase_name = "🌙 Termo Tanda 2 (04:00h) -> 70% Sòl Nocturn Bateria"
+            elif is_termo_active:
+                target = 75.0
+                phase_name = "♨️ Termo Manual Nocturn -> 75% Sòl Protecció Bateria"
+            else:
+                target = 100.0
+                phase_name = "🌙 Blindatge SAI Total Nocturn (100% Reserva & Salut Bateria)"
 
         # 👤 Comprovació de consigna manual de l'usuari a Cerbo GX a la tarda/vespre/nit:
         # Si l'usuari ha fixat manualment un límit superior (ex: 100% per seguretat/tronades), no el rebaixem.
-        if time_decimal >= 16.5 or time_decimal < 8.0:
+        if (time_decimal >= 16.5 or time_decimal < 8.0) and not is_termo_active:
             try:
                 import dbus
                 bus = dbus.SystemBus()
