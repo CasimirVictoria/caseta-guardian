@@ -155,23 +155,22 @@ class StateMachine:
                     guardian.high_discharge_start_time = now
                 dt_discharge = now - guardian.high_discharge_start_time
 
-                # 1. Descàrrega extrema (>35A / ~1.8kW bateria, límit 0.5C): Reconnexió ràpida als 5s
+                # 1. Descàrrega extrema (>35A / ~1.8kW, límit 0.5C Pylontech): Reconnexió ràpida als 15s
                 if guardian.bat_i <= -35.0:
-                    if dt_discharge >= 5.0:
-                        guardian.set_multiplus_mode(3, f"Descàrrega extrema de bateria ({abs(guardian.bat_i):.1f}A >= 35.0A per >5s)")
+                    if dt_discharge >= 15.0:
+                        guardian.set_multiplus_mode(3, f"Descàrrega extrema de bateria ({abs(guardian.bat_i):.1f}A >= 35.0A per >15s)")
                         guardian.high_discharge_start_time = None
                         return
-                # 2. Descàrrega moderada/alta (>18A / ~900W): Reconnexió ràpida als 10s
-                elif guardian.bat_i <= -18.0 or guardian.soc < 78.0:
-                    if dt_discharge >= 10.0:
-                        motiu = f"Descàrrega >18A ({abs(guardian.bat_i):.1f}A per >10s)" if guardian.bat_i <= -18.0 else f"Descàrrega amb bateria <78% ({abs(guardian.bat_i):.1f}A per >10s)"
-                        guardian.set_multiplus_mode(3, motiu)
-                        guardian.high_discharge_start_time = None
-                        return
-                # 3. Càrrega de 15A a 18A: Reconnexió als 30s
-                else:
+                # 2. Descàrrega amb bateria baixa (SoC < 75%): Reconnexió en 30s per preservar reserva SAI
+                elif guardian.soc < 75.0:
                     if dt_discharge >= 30.0:
-                        guardian.set_multiplus_mode(3, f"Descàrrega sostinguda ({abs(guardian.bat_i):.1f}A per >30s)")
+                        guardian.set_multiplus_mode(3, f"Descàrrega amb bateria baixa ({guardian.soc:.1f}% < 75% a {abs(guardian.bat_i):.1f}A per >30s)")
+                        guardian.high_discharge_start_time = None
+                        return
+                # 3. Descàrrega de cuina / cafetera / microones (fins a 32A amb SoC >= 75%): Permet fins a 4 minuts (240s) sense commutar relé!
+                else:
+                    if dt_discharge >= 240.0:
+                        guardian.set_multiplus_mode(3, f"Descàrrega prolongada de cuina ({abs(guardian.bat_i):.1f}A per >4 minuts)")
                         guardian.high_discharge_start_time = None
                         return
             else:
