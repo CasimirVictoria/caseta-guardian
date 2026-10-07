@@ -497,9 +497,14 @@ class CasetaGuardian:
     def sync_cerbo_min_soc(self, now_madrid=None):
         """Avalua periòdicament el balanç de Sol vs Consum i horari circadiari d'estiu per modular el Minimum SOC."""
         now = time.time()
-        # Interval suau de 2 minuts (120 segons) per evitar oscil·lacions
-        if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:
-            return
+        termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
+        termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
+        is_termo_active = termo_on and termo_p >= 500.0
+
+        # Resposta immediata (sense throttle de 120s) si el termo està actiu i el mínim soc és > 68%
+        if not (is_termo_active and (self.last_applied_min_soc or 100) > 68.0):
+            if now - self.last_soc_eval_time < 120 and self.last_applied_min_soc is not None:
+                return
         self.last_soc_eval_time = now
 
         if now_madrid is None:
@@ -525,8 +530,12 @@ class CasetaGuardian:
             rem_sun = max(0.0, today_est - self.solar_kwh_today)
             cur_pv = getattr(self, "pv_p", 0.0)
 
+            # Si el termo està actiu diürn, fixem 68% per evitar que ESS entre en mode "Recharge"
+            if is_termo_active:
+                target = 68.0
+                phase_name = f"♨️ Termo Actiu Diürn ({cur_pv:.0f}W sol) -> 68% Vas Buit Termo"
             # ☀️ Cas 1: Sol Abundant (Sol Real >= 500W O Sol Restant >= 4.5 kWh amb Sol Actual >= 250W)
-            if (cur_pv >= 500.0) or (rem_sun >= 4.5 and cur_pv >= 250.0):
+            elif (cur_pv >= 500.0) or (rem_sun >= 4.5 and cur_pv >= 250.0):
                 target = 68.0
                 phase_name = f"☀️ Sol Radiant ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 68% Vas Buit Gran"
             # 🌤️ Cas 2: Sol Moderat (Sol Real >= 200W O Sol Restant >= 3.0 kWh amb Sol Actual >= 100W)
@@ -1001,7 +1010,7 @@ class CasetaGuardian:
                     self.pv_p = 0.0
                 else:
                     self.pv_p = raw_pv
-            elif topic.endswith("/system/0/Ac/Consumption/L1/Power") or topic.endswith("/system/0/Ac/ConsumptionOnOutput/L1/Power") or topic.endswith("/vebus/276/Ac/Out/L1/P") or topic.endswith("/vebus/276/Ac/Out/P"):
+            elif topic.endswith("/system/0/Ac/Consumption/L1/Power") or topic.endswith("/system/0/Ac/ConsumptionOnOutput/L1/Power") or topic.endswith("/system/0/Ac/Consumption/Power") or topic.endswith("/system/0/Ac/ConsumptionOnOutput/Power"):
                 self.ac_loads = float(val) if val is not None else self.ac_loads
             elif topic.endswith("/system/0/Ac/Grid/L1/Power") or topic.endswith("/system/0/Ac/ActiveIn/L1/Power") or topic.endswith("/vebus/276/Ac/ActiveIn/L1/P") or topic.endswith("/vebus/276/Ac/ActiveIn/P"):
                 self.grid_p = float(val) if val is not None else self.grid_p
