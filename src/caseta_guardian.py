@@ -628,14 +628,14 @@ class CasetaGuardian:
                 effective_deficit = max(net_deficit, bat_discharge_w)
 
                 if effective_deficit <= 0.0:
-                    target = 50.0
-                    reason = f"☀️ Termo 100% Solar (Sol {self.pv_p:.0f}W >= Casa {self.ac_loads:.0f}W) -> Setpoint 50W"
+                    target = 200.0
+                    reason = f"☀️ Termo 100% Solar (Sol {self.pv_p:.0f}W >= Casa {self.ac_loads:.0f}W) -> Setpoint 200W (Mínim Coixí)"
                 elif effective_deficit <= 800.0:
-                    target = 50.0
-                    reason = f"🔋 Termo Suport Bateria Suau ({effective_deficit:.0f}W <= 800W, Sol {self.pv_p:.0f}W) -> Setpoint 50W"
+                    target = 200.0
+                    reason = f"🔋 Termo Suport Bateria Suau ({effective_deficit:.0f}W <= 800W, Sol {self.pv_p:.0f}W) -> Setpoint 200W (Mínim Coixí)"
                 else:
                     grid_needed = effective_deficit - 800.0
-                    target = round(min(max_grid_w, max(50.0, grid_needed)))
+                    target = round(min(max_grid_w, max(200.0, grid_needed)))
                     reason = f"⚡ Suport Xarxa Dinàmic ({grid_needed:.0f}W) per limitar bateria a 800W -> Setpoint {target:.0f}W"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
