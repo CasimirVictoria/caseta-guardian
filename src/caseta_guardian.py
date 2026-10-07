@@ -620,23 +620,27 @@ class CasetaGuardian:
                 target = max_grid_w
                 reason = f"🌙 Termo P3 Matinada ({termo_p:.0f}W) -> Setpoint {target:.0f}W (Suport Vall 4.5A)"
             else:
-                # B. Diürn: Sol prioritari, i la bateria aporta com a MÀXIM 800 W (~15A)
+                # B. Diürn: Sol prioritari, i la bateria aporta com a MÀXIM ~650 W AC (~14A DC a 49V)
+                # Tenint en compte l'eficiència del MultiPlus (~88%), 650W AC = ~740W DC (~14.8A)
                 net_deficit = self.ac_loads - self.pv_p
 
-                # Si la bateria s'està descarregant a més de 800W per mesura directa BMS:
+                # Mesures directes de bateria pel BMS:
                 bat_discharge_w = abs(self.bat_p) if getattr(self, "bat_p", 0.0) < 0.0 else 0.0
-                effective_deficit = max(net_deficit, bat_discharge_w)
+                bat_i_discharge = abs(self.bat_i) if getattr(self, "bat_i", 0.0) < 0.0 else 0.0
 
-                if effective_deficit <= 0.0:
+                if net_deficit <= 0.0:
                     target = 200.0
                     reason = f"☀️ Termo 100% Solar (Sol {self.pv_p:.0f}W >= Casa {self.ac_loads:.0f}W) -> Setpoint 200W (Mínim Coixí)"
-                elif effective_deficit <= 800.0:
+                elif net_deficit <= 650.0 and bat_i_discharge <= 14.5:
                     target = 200.0
-                    reason = f"🔋 Termo Suport Bateria Suau ({effective_deficit:.0f}W <= 800W, Sol {self.pv_p:.0f}W) -> Setpoint 200W (Mínim Coixí)"
+                    reason = f"🔋 Termo Suport Bateria Suau (Dèficit {net_deficit:.0f}W, Bat {bat_i_discharge:.1f}A <= 14.5A) -> Setpoint 200W (Mínim Coixí)"
                 else:
-                    grid_needed = effective_deficit - 800.0
+                    # Necessitem suport dinàmic de xarxa per blindar la bateria a <=14A
+                    deficit_grid = max(0.0, net_deficit - 650.0)
+                    current_excess_grid = max(0.0, (bat_i_discharge - 14.0) * 50.0) if bat_i_discharge > 14.0 else 0.0
+                    grid_needed = max(deficit_grid, current_excess_grid)
                     target = round(min(max_grid_w, max(200.0, grid_needed)))
-                    reason = f"⚡ Suport Xarxa Dinàmic ({grid_needed:.0f}W) per limitar bateria a 800W -> Setpoint {target:.0f}W"
+                    reason = f"⚡ Suport Xarxa Dinàmic ({grid_needed:.0f}W) per limitar bateria a <=14A -> Setpoint {target:.0f}W"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
