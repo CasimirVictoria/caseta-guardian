@@ -43,6 +43,7 @@ from caseta_guardian_modules.config import (
 )
 from caseta_guardian_modules.notifications import NotificationManager
 from caseta_guardian_modules.tuya_manager import TuyaManager
+from caseta_guardian_modules.weather_worker import WeatherWorker
 from caseta_guardian_modules.energy_forecast import EnergyForecast
 from caseta_guardian_modules.state_machine import StateMachine
 from caseta_guardian_modules.mqtt_client import MQTTClient
@@ -105,7 +106,9 @@ class CasetaGuardian:
         # Inicialització dels mòduls
         self.notifications = NotificationManager(NTFY_TOPIC)
         self.tuya = TuyaManager(config)
-        self.forecast = EnergyForecast(config)
+        self.weather = WeatherWorker(config, on_update_callback=self._on_weather_update)
+        self.weather.start()
+        self.forecast = self.weather
         self.state_machine = StateMachine(self.tuya, self.notifications)
         self.mqtt_client = MQTTClient(CERBO_IP, PORTAL_ID)
         self.dbus_telemetry = DBusTelemetry()
@@ -359,170 +362,123 @@ class CasetaGuardian:
         except Exception as e:
             log.error(f"Error registrant històric permanent diari: {e}")
 
-    def update_inforatge(self):
-        """Consulta Inforatge Ador cada 15 minuts per obtenir condicions hiper-locals reals."""
-        now = time.time()
-        if now - self.last_inforatge_time < 900:  # Cada 15 minuts
-            return
+    def _on_weather_update(self, snapshot):
+        """Callback quan el WeatherWorker obté noves dades en segon pla."""
+        self.ext_temp = snapshot.ext_temp
+        self.ext_humidity = snapshot.ext_humidity
+        self.rain_today = snapshot.rain_today
+        self.today_kwh_est = snapshot.today_kwh_est
+        self.remaining_kwh_today = snapshot.remaining_kwh_today
+        self.tomorrow_kwh_est = snapshot.tomorrow_kwh_est
+        self.max_temp_today = snapshot.max_temp_today
+        self.sunset_temp_today = snapshot.sunset_temp_today
+        self.blackout_risk = snapshot.blackout_risk
+        self.target_reserve_soc = snapshot.target_reserve_soc
 
-        self.last_inforatge_time = now
-        try:
-            url = "https://inforatge.com/meteo-ador"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-            with urllib.request.urlopen(req, timeout=8) as rep:
-                html = rep.read().decode("utf-8")
-
-            temp_m = re.search(r'class="blocValorTM">(\d+)<span class="vPetit">,(\d+)</span>', html)
-            temp = float(f"{temp_m.group(1)}.{temp_m.group(2)}") if temp_m else None
-
-            hum_m = re.search(r'class="blocVariableHR">.*?class="blocValor">(\d+)</div>', html, re.S)
-            hum = float(hum_m.group(1)) if hum_m else None
-
-            press_m = re.search(r'class="blocVariablePA">.*?class="blocValor">(\d+)', html, re.S)
-            press = int(press_m.group(1)) if press_m else None
-
-            vent_m = re.search(r'class="blocVariableVV">.*?class="blocValor">(\d+)<span class="vPetit">\s*([^<]+)</span>', html, re.S)
-            vent_vel = int(vent_m.group(1)) if vent_m else 0
-            vent_dir = vent_m.group(2).strip() if vent_m else ""
-
-            pluja_m = re.search(r'class="blocVariablePL">.*?class="blocValor">(\d+),(\d+)</div>', html, re.S)
-            pluja = float(f"{pluja_m.group(1)}.{pluja_m.group(2)}") if pluja_m else 0.0
-
-            tmax_m = re.search(r'class="boxpetitkTX negreT"><span class="varmobil">m&agrave;x</span>(\d+),(\d+)', html)
-            tmax = float(f"{tmax_m.group(1)}.{tmax_m.group(2)}") if tmax_m else None
-
-            tmin_m = re.search(r'class="boxpetitkTM negreT"><span class="varmobil">m&iacute;n</span>(\d+),(\d+)', html)
-            tmin = float(f"{tmin_m.group(1)}.{tmin_m.group(2)}") if tmin_m else None
-
-            self.ext_temp = temp
-            self.ext_humidity = float(hum) if hum is not None else 50.0
-            self.rain_today = float(pluja) if pluja is not None else 0.0
-            inforatge_data = {
-                "temperatura": temp,
-                "humitat": hum,
-                "pressio": press,
-                "vent_vel": vent_vel,
-                "vent_dir": vent_dir,
-                "pluja_avui": pluja,
-                "t_max_avui": tmax,
-                "t_min_avui": tmin,
-                "timestamp": now,
-                "hora_str": get_madrid_now().strftime("%H:%M")
-            }
-
-            with open("/tmp/caseta_inforatge_cache.json", "w") as f:
-                json.dump(inforatge_data, f)
-
-            if self.mqtt_client.client:
+        if hasattr(self, "mqtt_client") and self.mqtt_client and self.mqtt_client.client:
+            try:
+                inforatge_data = {
+                    "temperatura": snapshot.ext_temp,
+                    "humitat": snapshot.ext_humidity,
+                    "pluja_avui": snapshot.rain_today,
+                    "timestamp": snapshot.timestamp,
+                    "hora_str": get_madrid_now().strftime("%H:%M")
+                }
                 self.mqtt_client.publish("caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
                 self.mqtt_client.publish_to_portal("caseta/inforatge", json.dumps({"value": inforatge_data}), retain=True)
-            log.info(f"📍 Inforatge Ador: Ext {temp}ºC | Hum {hum}% | Vent {vent_vel} km/h {vent_dir} | Pressió {press} hPa")
-        except Exception as e:
-            log.warning(f"Error consultant Inforatge Ador: {e}")
+            except Exception:
+                pass
+
+    def update_inforatge(self):
+        """Actualitza atributs de clima a partir de la instantània de WeatherWorker (0 ms)."""
+        snap = self.weather.get_snapshot()
+        if snap.timestamp > 0.0:
+            self.ext_temp = snap.ext_temp
+            self.ext_humidity = snap.ext_humidity
+            self.rain_today = snap.rain_today
+            self.today_kwh_est = snap.today_kwh_est
+            self.remaining_kwh_today = snap.remaining_kwh_today
+            self.tomorrow_kwh_est = snap.tomorrow_kwh_est
+            self.max_temp_today = snap.max_temp_today
+            self.sunset_temp_today = snap.sunset_temp_today
+            self.blackout_risk = snap.blackout_risk
+            self.target_reserve_soc = snap.target_reserve_soc
 
     def update_ac_status(self):
-        """Consulta l'estat real del comandament virtual de l'AC a Tuya Cloud cada 2 minuts (120s) amb token en memòria cau."""
+        """Actualitza l'estat de l'AC a partir de la instantània de TuyaManager (0 ms)."""
         now = time.time()
-        if now - getattr(self, "last_ac_status_query_time", 0.0) < 45.0:
+        snap = self.tuya.get_ac_snapshot()
+        if snap.timestamp == 0.0:
             return
-        self.last_ac_status_query_time = now
 
-        cid = require_config(config, "tuya_client_id", "Client ID de Tuya Cloud")
-        sec = require_config(config, "tuya_secret", "Secret de Tuya Cloud")
-        base_url = config.get("tuya_base_url", "https://openapi.tuyaeu.com")
-        remote_id = require_config(config, "tuya_remote_id", "ID del comandament virtual de l'AC")
+        pwr = snap.power
+        temp = snap.temp
+        mode_str = snap.mode
 
-        try:
-            token = self.tuya.get_tuya_access_token(cid, sec, base_url)
-            if not token:
-                return
+        prev_pwr = getattr(self, "ac_current_power", None)
 
-            path_status = f"/v1.0/devices/{remote_id}/status"
-            t_ms = str(int(time.time() * 1000))
-            sign_str = f"{cid}{token}{t_ms}GET\n{content_hash if 'content_hash' in locals() else hashlib.sha256(b'').hexdigest()}\n\n{path_status}"
-            sign = hmac.new(sec.encode(), sign_str.encode(), hashlib.sha256).hexdigest().upper()
+        if prev_pwr is not None:
+            # ✋ Detecció d'apagat manual per l'usuari
+            if prev_pwr == 1 and pwr == 0:
+                dt_guardian_off = now - getattr(self, "last_guardian_ac_power_off_time", 0.0)
+                if dt_guardian_off > 45.0:
+                    self.ac_manual_off_time = now
+                    self.ac_manual_on_time = None
+                    fin_dt = get_madrid_now() + datetime.timedelta(seconds=3600)
+                    fin_str = fin_dt.strftime("%H:%M")
+                    log.info(f"✋ [CLIMA] Detectat apagat manual de l'AC per l'usuari (Tuya/App). Bloqueig d'encesa automàtica durant 60 minuts (fins a les {fin_str}h).")
+                    self.notifications.send_notification(
+                        "✋ AC Apagat Manualment",
+                        f"S'ha detectat l'apagat manual de l'aire condicionat. No es tornarà a encendre automàticament fins a les {fin_str}h (pausa d'1 hora).",
+                        "default",
+                        "hand"
+                    )
+            elif prev_pwr == 0 and pwr == 1:
+                dt_guardian_cmd = now - getattr(self, "last_ac_command_time", 0.0)
+                if dt_guardian_cmd > 45.0:
+                    self.ac_manual_on_time = now
+                    log.info("▶️ [CLIMA] Detectada encesa manual de l'AC per l'usuari a Tuya/comandament. Prioritat manual activa (es mantindrà encès 2 hores).")
+                if getattr(self, "ac_manual_off_time", None) is not None:
+                    log.info("▶️ [CLIMA] Cancel·lant la pausa d'apagat per encesa manual.")
+                    self.ac_manual_off_time = None
+                self.ac_turned_off_by_free_cooling = False
+                self.free_cooling_start_time = None
+            elif prev_pwr == 1 and pwr == 1 and temp != self.ac_current_temp:
+                dt_guardian_cmd = now - getattr(self, "last_ac_command_time", 0.0)
+                if dt_guardian_cmd > 45.0:
+                    self.ac_manual_on_time = now
+                    log.info(f"🌡️ [CLIMA] Canvi manual de consigna a {temp}ºC per l'usuari. Prioritat manual estesa 2 hores.")
 
-            req_status = urllib.request.Request(f"{base_url}{path_status}", headers={
-                "client_id": cid, "access_token": token, "sign": sign, "t": t_ms, "sign_method": "HMAC-SHA256", "Content-Type": "application/json"
-            })
-            with urllib.request.urlopen(req_status, timeout=5) as rep:
-                res = json.loads(rep.read().decode())
-                if res.get("success", False):
-                    status_list = res.get("result", [])
-                    status_map = {item["code"]: item["value"] for item in status_list}
-                    pwr_val = status_map.get("power", "0")
-                    pwr = 1 if str(pwr_val) in ("1", "true", "True") else 0
-                    temp = int(status_map.get("temp", self.ac_current_temp))
-                    mode_val = str(status_map.get("mode", "0"))
-                    mode_str = "Fred" if mode_val in ("0", "cool") else "Auto"
+        self.ac_current_power = pwr
+        self.ac_current_temp = temp
 
-                    prev_pwr = getattr(self, "ac_current_power", None)
+        manual_on = bool(getattr(self, "ac_manual_on_time", None) and (now - self.ac_manual_on_time < 7200.0))
+        manual_off = bool(getattr(self, "ac_manual_off_time", None) and (now - self.ac_manual_off_time < 3600.0))
 
-                    if prev_pwr is not None:
-                        # ✋ Detecció d'apagat manual per l'usuari
-                        if prev_pwr == 1 and pwr == 0:
-                            dt_guardian_off = now - getattr(self, "last_guardian_ac_power_off_time", 0.0)
-                            if dt_guardian_off > 45.0:
-                                self.ac_manual_off_time = now
-                                self.ac_manual_on_time = None
-                                fin_dt = get_madrid_now() + datetime.timedelta(seconds=3600)
-                                fin_str = fin_dt.strftime("%H:%M")
-                                log.info(f"✋ [CLIMA] Detectat apagat manual de l'AC per l'usuari (Tuya/App). Bloqueig d'encesa automàtica durant 60 minuts (fins a les {fin_str}h).")
-                                self.notifications.send_notification(
-                                    "✋ AC Apagat Manualment",
-                                    f"S'ha detectat l'apagat manual de l'aire condicionat. No es tornarà a encendre automàticament fins a les {fin_str}h (pausa d'1 hora).",
-                                    "default",
-                                    "hand"
-                                )
-                        elif prev_pwr == 0 and pwr == 1:
-                            dt_guardian_cmd = now - getattr(self, "last_ac_command_time", 0.0)
-                            if dt_guardian_cmd > 45.0:
-                                self.ac_manual_on_time = now
-                                log.info("▶️ [CLIMA] Detectada encesa manual de l'AC per l'usuari a Tuya/comandament. Prioritat manual activa (es mantindrà encès 2 hores).")
-                            if getattr(self, "ac_manual_off_time", None) is not None:
-                                log.info("▶️ [CLIMA] Cancel·lant la pausa d'apagat per encesa manual.")
-                                self.ac_manual_off_time = None
-                            self.ac_turned_off_by_free_cooling = False
-                            self.free_cooling_start_time = None
-                        elif prev_pwr == 1 and pwr == 1 and temp != self.ac_current_temp:
-                            dt_guardian_cmd = now - getattr(self, "last_ac_command_time", 0.0)
-                            if dt_guardian_cmd > 45.0:
-                                self.ac_manual_on_time = now
-                                log.info(f"🌡️ [CLIMA] Canvi manual de consigna a {temp}ºC per l'usuari. Prioritat manual estesa 2 hores.")
+        if pwr == 1:
+            if manual_on:
+                rem_on = int(round((7200.0 - (now - self.ac_manual_on_time)) / 60.0))
+                reason_txt = f"Manual Usuari ({rem_on} min prioritat)"
+            else:
+                reason_txt = "Automàtic / Guardià"
+        elif manual_off:
+            rem_m = int(round((3600.0 - (now - self.ac_manual_off_time)) / 60.0))
+            reason_txt = f"Pausa Manual Usuari ({rem_m} min restants)"
+        else:
+            reason_txt = "En Repòs"
 
-                    self.ac_current_power = pwr
-                    self.ac_current_temp = temp
-
-                    # Càlcul del motiu per a telemetria MQTT
-                    manual_on = bool(getattr(self, "ac_manual_on_time", None) and (now - self.ac_manual_on_time < 7200.0))
-                    manual_off = bool(getattr(self, "ac_manual_off_time", None) and (now - self.ac_manual_off_time < 3600.0))
-
-                    if pwr == 1:
-                        if manual_on:
-                            rem_on = int(round((7200.0 - (now - self.ac_manual_on_time)) / 60.0))
-                            reason_txt = f"Manual Usuari ({rem_on} min prioritat)"
-                        else:
-                            reason_txt = "Automàtic / Guardià"
-                    elif manual_off:
-                        rem_m = int(round((3600.0 - (now - self.ac_manual_off_time)) / 60.0))
-                        reason_txt = f"Pausa Manual Usuari ({rem_m} min restants)"
-                    else:
-                        reason_txt = "En Repòs"
-
-                    ac_payload = {
-                        "power": pwr,
-                        "temp": temp,
-                        "mode": mode_str if pwr == 1 else "Apagat",
-                        "reason": reason_txt,
-                        "manual_on": manual_on,
-                        "manual_off": manual_off,
-                        "timestamp": now
-                    }
-                    if self.mqtt_client.client:
-                        self.mqtt_client.publish("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
-                        self.mqtt_client.publish_to_portal("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
-        except Exception as e:
-            log.debug(f"Error consultant estat AC Tuya: {e}")
+        ac_payload = {
+            "power": pwr,
+            "temp": temp,
+            "mode": mode_str if pwr == 1 else "Apagat",
+            "reason": reason_txt,
+            "manual_on": manual_on,
+            "manual_off": manual_off,
+            "timestamp": now
+        }
+        if hasattr(self, "mqtt_client") and self.mqtt_client and self.mqtt_client.client:
+            self.mqtt_client.publish("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
+            self.mqtt_client.publish_to_portal("caseta/ac", json.dumps({"value": ac_payload}), retain=True)
 
     def evaluate_climate_control(self, now_madrid):
         """Avalua les Lleis de Climatització Intel·ligent de la Caseta."""
@@ -1026,17 +982,49 @@ class CasetaGuardian:
         except Exception:
             pass
 
+    def stop(self):
+        """Atura de forma ordenada tots els serveis i treballadors en segon pla."""
+        if not self.running:
+            return
+        self.running = False
+        log.info("🛑 Aturant Caseta Guardian...")
+        try:
+            self.save_daily_stats()
+        except Exception as e:
+            log.warning(f"Error guardant stats diàries en aturar: {e}")
+
+        if hasattr(self, "weather") and self.weather:
+            try:
+                self.weather.stop()
+            except Exception:
+                pass
+
+        if hasattr(self, "tuya") and self.tuya:
+            try:
+                self.tuya.stop()
+            except Exception:
+                pass
+
+        if hasattr(self, "notifications") and self.notifications:
+            try:
+                self.notifications.stop()
+            except Exception:
+                pass
+
+        if hasattr(self, "mqtt_client") and self.mqtt_client:
+            try:
+                self.mqtt_client.disconnect()
+            except Exception:
+                pass
+        log.info("👋 Caseta Guardian aturat correctament.")
+
     def run(self):
         log.info(f"🚀 Iniciant Caseta Guardian (Cerbo IP: {CERBO_IP})...")
 
         import signal
         def sig_handler(signum, frame):
-            log.info(f"🛑 Rebut senyal {signum}. Guardant stats a disc...")
-            try:
-                self.save_daily_stats()
-            except Exception:
-                pass
-            self.running = False
+            log.info(f"🛑 Rebut senyal {signum}. Aturant el servei...")
+            self.stop()
             sys.exit(0)
         signal.signal(signal.SIGTERM, sig_handler)
         signal.signal(signal.SIGINT, sig_handler)
@@ -1051,6 +1039,7 @@ class CasetaGuardian:
         log.info("🛡️ Guardià en línia i vigilant telemetria en directe!")
 
         while self.running:
+            t_loop_start = time.perf_counter()
             try:
                 now = time.time()
                 now_madrid = get_madrid_now()
@@ -1072,16 +1061,22 @@ class CasetaGuardian:
                 self.state_machine.evaluate_state_machine(self, now_madrid)
                 self.evaluate_climate_control(now_madrid)
 
-                time.sleep(1.0)
             except KeyboardInterrupt:
                 log.info("Aturant Caseta Guardian...")
-                self.running = False
+                break
             except Exception as e:
                 log.error(f"Error al bucle principal: {e}")
-                time.sleep(2.0)
+                time.sleep(1.0)
+                continue
 
-        self.save_daily_stats()
-        self.mqtt_client.disconnect()
+            t_work = time.perf_counter() - t_loop_start
+            if t_work > 0.250:  # > 250ms (avís de bloqueig o latència anormal)
+                log.warning(f"⚠️ [JITTER] Iteració del bucle ha tardat {t_work*1000:.1f}ms (>250ms)!")
+
+            sleep_time = max(0.0, 1.0 - t_work)
+            time.sleep(sleep_time)
+
+        self.stop()
 
 
 if __name__ == "__main__":
