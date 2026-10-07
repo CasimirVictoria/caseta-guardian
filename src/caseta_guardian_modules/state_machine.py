@@ -187,6 +187,21 @@ class StateMachine:
 
         elif guardian.vebus_mode == 3:
             if guardian.grid_p is not None and guardian.grid_p < -50.0 and guardian.soc >= 88.0:
+                # Abans de desconnectar a Inverter Only, comprovem si podem encendre el Termo com a desviador d'excedents!
+                termo_on = guardian.termo_status.get("is_on", False) if guardian.termo_status else False
+                can_heat = (getattr(guardian, "termo_est_temp", 60.0) < 78.0) and not getattr(guardian, "termo_surplus_done", False)
+                if not termo_on and can_heat:
+                    log.info(f"⚡ Abocament detectat ({abs(guardian.grid_p):.0f}W) amb SoC {guardian.soc:.1f}% -> Encenent Termo com a desviador d'excedents!")
+                    self.tuya.send_termo_command(power=True, reason=f"⚡ Desviador Anti-Abocament ({abs(guardian.grid_p):.0f}W)")
+                    self.notifications.send_notification(
+                        "⚡ Termo Engegat (Desviador Anti-Abocament)",
+                        f"Detectat abocament de {abs(guardian.grid_p):.0f}W amb bateria al {guardian.soc:.1f}%. Escalfant termo per no injectar a xarxa!",
+                        "default",
+                        "electric_plug"
+                    )
+                    guardian.export_start_time = None
+                    return
+
                 if guardian.export_start_time is None:
                     guardian.export_start_time = now
                     log.info(f"⚠️ Detectat abocament de {abs(guardian.grid_p):.0f}W amb SoC {guardian.soc:.1f}%. Iniciant compte enrere de 30s...")
@@ -198,7 +213,7 @@ class StateMachine:
                 guardian.export_start_time = None
 
     def evaluate_termo_surplus(self, guardian, now_madrid):
-        """Gestiona l'engegada automàtica del Termo Elèctric (Desviador d'Excedents Solar) i Arbitratge P3."""
+        """Gestiona l'engegada automàtica del Termo Elèctric (Desviador d'Excedents Solar cap a 80ºC) i Arbitratge P3."""
         now = time.time()
         current_hour = now_madrid.hour
         current_minute = now_madrid.minute
@@ -223,119 +238,147 @@ class StateMachine:
                 )
             return
 
-        # Si el termo està encès, avaluem quan cal apagar-lo:
+        # Si el termo està encès, avaluem quan cal apagar-lo o gestionar el termòstat mecànic:
         if is_on:
-            # 1. Termòstat Intern Assolit (<50W durant >2 minuts) -> Aigua calenta a 60ºC
+            # 1. Termòstat Intern Mecànic Ariston Assolit (<50W durant >90s)
             if termo_p < 50.0:
                 if guardian.termo_low_power_start_time is None:
                     guardian.termo_low_power_start_time = now
-                elif now - guardian.termo_low_power_start_time >= 120.0:
-                    self.tuya.send_termo_command(
-                        power=False,
-                        reason="♨️ Termòstat Ariston Assolit: Consum <50W durant >2 min -> Aigua calenta a 60ºC!"
-                    )
-                    self.notifications.send_notification(
-                        "♨️ Aigua Calenta a 60ºC Assolida",
-                        f"El termo ha completat el cicle tèrmic ({termo_p:.0f}W). Dipòsit a 60ºC!",
-                        "default",
-                        "bath"
-                    )
-                    guardian.termo_heated_today = True
-                    guardian.termo_est_temp = 60.0
-                    guardian.termo_last_heated_date = now_madrid.strftime("%Y-%m-%d")
-                    guardian.termo_last_60_ts = now
-                    guardian.termo_low_power_start_time = None
-                    return
+                elif now - guardian.termo_low_power_start_time >= 90.0:
+                    # Cas A: Ha tallat al voltant de 60ºC (la rodeta física està a 60ºC)
+                    if getattr(guardian, "termo_est_temp", 60.0) < 70.0:
+                        guardian.termo_est_temp = 60.0
+                        guardian.termo_last_60_ts = now
+                        guardian.termo_heated_today = True
+
+                        if not getattr(guardian, "termo_notified_knob_60", False):
+                            guardian.termo_notified_knob_60 = True
+                            log.info("♨️ [TERMO] Termòstat mecànic ha tallat a 60ºC. Notificant usuari per si vol pujar rodeta a 80ºC.")
+                            self.notifications.send_notification(
+                                "♨️ Termo a 60ºC (Pots pujar a 80º?)",
+                                "El termòstat mecànic del termo ha tallat a 60ºC però hi ha sol! Si vols aprofitar l'excedent, puja la rodeta física a 80ºC.",
+                                "default",
+                                "bath"
+                            )
+
+                        # Si han passat més de 10 minuts en repòs (<50W) i no s'ha pujat la rodeta, apaguem l'endoll
+                        if now - guardian.termo_low_power_start_time >= 600.0:
+                            self.tuya.send_termo_command(
+                                power=False,
+                                reason="♨️ Termòstat Ariston tallat a 60ºC per >10 min -> Apagat d'endoll fins a nova ordre o excedent"
+                            )
+                            guardian.termo_low_power_start_time = None
+                            return
+
+                    # Cas B: Ha tallat a la zona alta (>= 70ºC) -> Assolits 80ºC!
+                    else:
+                        guardian.termo_est_temp = 80.0
+                        guardian.termo_surplus_done = True
+                        guardian.termo_low_power_start_time = None
+                        self.tuya.send_termo_command(
+                            power=False,
+                            reason="♨️ Termòstat Ariston Assolit: Consum <50W -> Aigua calenta a 80ºC Assolida (Dipòsit Ple)!"
+                        )
+                        self.notifications.send_notification(
+                            "♨️ Aigua Calenta a 80ºC Assolida",
+                            "El dipòsit de 100L ha completat el cicle solar complet. Aigua a màxima temperatura (80ºC)!",
+                            "default",
+                            "tada"
+                        )
+                        return
             else:
                 guardian.termo_low_power_start_time = None
+                # Si torna a consumir (>500W) després d'haver estat avisat a 60ºC, l'usuari ha apujat la rodeta a 80ºC!
+                if getattr(guardian, "termo_notified_knob_60", False) and termo_p >= 500.0:
+                    log.info(f"♨️ [TERMO] Rodeta física apujada per l'usuari! Consum reactivat a {termo_p:.0f}W cap a 80ºC.")
+                    guardian.termo_notified_knob_60 = False
 
-            # 2. Pausa per Bateria Caiguda (<65%)
-            if guardian.soc < 65.0:
-                self.tuya.send_termo_command(
-                    power=False,
-                    reason=f"⏸️ Pausa de Seguretat: Bateria ha baixat al {guardian.soc:.1f}% (<65%)"
-                )
-                guardian.termo_low_power_start_time = None
-                return
-
-            # 3. Fi de la Finestra Matinal (passades les 06:30h)
-            if 6.5 <= time_decimal < 9.0:
-                self.tuya.send_termo_command(
-                    power=False,
-                    reason="🕒 Fi Finestra Matinada (06:30h): Apagat preventiu abans de l'esmorzar (cafetera/microones)"
-                )
-                guardian.termo_low_power_start_time = None
-                return
-
-            # 4. Fi de la Finestra d'Excedents Solars (passades les 16:00h)
-            # ELIMINAT: El termo es pot encendre a la vesprada/nit per dutxar els xiquets
-            # Els escuts de protecció de bateria (SoC < 65%, < 60%, < 50%) es mantenen actius
-
-        # Si el termo està apagat i encara no ha completat la càrrega d'avui:
-        elif not guardian.termo_heated_today and not getattr(guardian, "termo_cut_off_today", False):
+            # 2. Sòl de Seguretat Dinàmic de Bateria per Previsió (SAI Prioritari)
+            rem_sun = getattr(guardian, "remaining_kwh_today", 3.0)
             today_est = getattr(guardian, "today_kwh_est", 5.0)
-            hours_60 = round((now - guardian.termo_last_60_ts) / 3600.0, 1) if getattr(guardian, "termo_last_60_ts", None) else None
-            urgent_heating = (getattr(guardian, "termo_est_temp", 60.0) < 42.0) or (hours_60 is not None and hours_60 >= 48.0) or ((getattr(guardian, "termo_status", {}).get("days_since_60", 0) or 0) >= 2)
 
-            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:30h)
-            soc_ok_matinada = (guardian.soc >= 70.0) or (urgent_heating and guardian.soc >= 65.0)
-            if 4.0 <= time_decimal < 6.5 and grid_present and soc_ok_matinada:
-                grid_v_safe = guardian.grid_v if getattr(guardian, "grid_v", 0.0) >= 190.0 else 230.0
-                target_p3 = round(min(1050.0, max(900.0, 4.5 * grid_v_safe)))
-                if guardian.vebus_mode == 2:
-                    guardian.set_multiplus_mode(3, "🌙 Encesa Matinada P3 -> Reconnexió Immediata a Xarxa")
-                # Pre-rampa D-Bus a 4.5A per evitar descàrrega brusca de bateria
-                try:
-                    import dbus
-                    bus = dbus.SystemBus()
-                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
-                    obj.SetValue(dbus.Double(target_p3), dbus_interface="com.victronenergy.BusItem")
-                    guardian.last_grid_setpoint = target_p3
-                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {target_p3:.0f}W (4.5A) per a encesa matinal P3...")
-                except Exception as e:
-                    log.debug(f"Error pre-rampa D-Bus: {e}")
+            # Previsió bona: sol restant >= 3.5 kWh o dia radiant >= 4.5 kWh abans de les 15:30h -> Sòl 65%
+            if (rem_sun >= 3.5 or today_est >= 4.5) and time_decimal < 15.5:
+                min_soc_termo = 65.0
+            # Previsió dolenta o vesprada (>16:00h) -> Sòl 80%
+            elif rem_sun < 2.5 or time_decimal >= 16.0 or getattr(guardian, "rain_today", 0.0) >= 0.5:
+                min_soc_termo = 80.0
+            else:
+                min_soc_termo = 72.0
 
-                motiu_extra = " [Rescat Aigua Freda/Antillegionel·la]" if urgent_heating else ""
+            if guardian.soc < min_soc_termo:
                 self.tuya.send_termo_command(
-                    power=True,
-                    reason=f"🌙 Matinada Vall P3{motiu_extra} ({now_madrid.strftime('%H:%M')}h): Encesa a 0.08 €/kWh amb Xarxa Activa ({guardian.grid_v:.0f}V) i Bateria {guardian.soc:.0f}%"
+                    power=False,
+                    reason=f"⏸️ Sòl Bateria Assolit: Bateria ha baixat al {guardian.soc:.1f}% (<{min_soc_termo:.0f}%) per preservar reserva SAI"
                 )
-                self.notifications.send_notification(
-                    f"🌙 Termo Engegat a la Matinada (Vall P3){motiu_extra}",
-                    f"Calfant aigua a 60ºC en horari super-econòmic (0.08 €/kWh). Xarxa activa ({guardian.grid_v:.0f}V) i bateria al {guardian.soc:.0f}%!",
-                    "default",
-                    "moon"
-                )
+                guardian.termo_low_power_start_time = None
                 return
 
-            # ☀️ CAS B: Excedents Solars Diürns (09:00h - 16:00h)
-            soc_ok_diurn = (guardian.soc >= 80.0 and guardian.pv_p >= 500.0) or (urgent_heating and guardian.soc >= 88.0 and guardian.pv_p >= 150.0)
-            if 9.0 <= time_decimal < 16.0 and soc_ok_diurn:
-                if today_est >= 5.0:
-                    pre_target = 200.0
-                elif today_est >= 3.5:
-                    pre_target = 400.0
-                else:
-                    pre_target = 800.0
+            # 3. Protecció d'intensitat màxima de descàrrega de bateria (>18A sostinguts per >20s)
+            if getattr(guardian, "bat_i", 0.0) < -18.0:
+                if guardian.high_discharge_start_time is None:
+                    guardian.high_discharge_start_time = now
+                elif now - guardian.high_discharge_start_time >= 20.0:
+                    self.tuya.send_termo_command(
+                        power=False,
+                        reason=f"⚡ Escut Bateria: Descàrrega excessiva ({abs(guardian.bat_i):.1f}A > 18A per >20s)"
+                    )
+                    guardian.high_discharge_start_time = None
+                    return
+            else:
+                guardian.high_discharge_start_time = None
 
-                try:
-                    import dbus
-                    bus = dbus.SystemBus()
-                    obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
-                    obj.SetValue(dbus.Double(pre_target), dbus_interface="com.victronenergy.BusItem")
-                    guardian.last_grid_setpoint = pre_target
-                    log.info(f"🔌 [PRE-RAMPA] Grid Setpoint a {pre_target:.0f}W abans d'engegar el Termo per excedents solars...")
-                except Exception as e:
-                    log.warning(f"Error establint pre-rampa a D-Bus: {e}")
+            # 4. Fi de la Finestra Matinal (passades les 07:00h en P3)
+            if 7.0 <= time_decimal < 9.0 and getattr(guardian, "termo_est_temp", 60.0) >= 58.0:
+                self.tuya.send_termo_command(
+                    power=False,
+                    reason="🕒 Fi Finestra Matinada (07:00h): Aigua calenta a punt per a la dutxa"
+                )
+                guardian.termo_low_power_start_time = None
+                return
 
-                motiu_b = f"☀️ Excedent Solar: SoC {guardian.soc:.1f}% >= 80% i Sol {guardian.pv_p:.0f}W >= 500W -> Encesa Termo" if guardian.pv_p >= 500.0 else f"☀️ Rescat Diürn Bateria Plena: SoC {guardian.soc:.1f}% i Sol {guardian.pv_p:.0f}W -> Encesa Termo"
+        # Si el termo està apagat:
+        else:
+            temp_actual = getattr(guardian, "termo_est_temp", 60.0)
+
+            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:45h) - Dutxa Garantida a 60ºC
+            if 4.0 <= time_decimal < 6.75 and grid_present and guardian.soc >= 70.0:
+                # Si l'aigua ja està a >= 58ºC, NO cal encendre'l gens! (0 € gastats)
+                if temp_actual < 58.0 and not getattr(guardian, "termo_morning_done", False):
+                    if guardian.vebus_mode == 2:
+                        guardian.set_multiplus_mode(3, "🌙 Encesa Matinada P3 -> Reconnexió Immediata a Xarxa")
+
+                    self.tuya.send_termo_command(
+                        power=True,
+                        reason=f"🌙 Matinada Vall P3 ({now_madrid.strftime('%H:%M')}h): Termo a {temp_actual:.1f}ºC -> Calfament a 60ºC per a la dutxa"
+                    )
+                    self.notifications.send_notification(
+                        "🌙 Termo Engegat a la Matinada (Vall P3)",
+                        f"Aigua a {temp_actual:.1f}ºC. Escalfant fins a 60ºC a 0.07 €/kWh per a la dutxa del matí!",
+                        "default",
+                        "moon"
+                    )
+                    return
+
+            # ☀️ CAS B: Excedents Solars Diürns (09:30h - 17:00h) - Desviador cap a 80ºC
+            can_heat_surplus = (temp_actual < 78.0) and not getattr(guardian, "termo_surplus_done", False)
+            detecting_export = (guardian.grid_p is not None and guardian.grid_p < -30.0 and guardian.soc >= 85.0)
+            solar_surplus_ok = (guardian.soc >= 88.0 and guardian.pv_p >= 500.0) or (guardian.soc >= 92.0 and guardian.pv_p >= 250.0)
+
+            if 9.5 <= time_decimal < 17.0 and can_heat_surplus and (solar_surplus_ok or detecting_export):
+                if guardian.vebus_mode == 2:
+                    guardian.set_multiplus_mode(3, "☀️ Encesa Termo per Excedents -> Reconnexió Immediata a Xarxa")
+
+                guardian.termo_notified_knob_60 = False
+                motiu = "⚡ Desviador Anti-Abocament" if detecting_export else "☀️ Excedent Solar Diürn"
                 self.tuya.send_termo_command(
                     power=True,
-                    reason=motiu_b
+                    reason=f"{motiu}: SoC {guardian.soc:.1f}%, Sol {guardian.pv_p:.0f}W, Aigua {temp_actual:.1f}ºC -> Escalfant cap a 80ºC"
                 )
                 self.notifications.send_notification(
                     "♨️ Termo Engegat per Excedents Solars",
-                    f"Bateria al {guardian.soc:.1f}% i Sol a {guardian.pv_p:.0f}W. Escalfant aigua de franc!",
+                    f"{motiu}! Bateria al {guardian.soc:.1f}% i Sol a {guardian.pv_p:.0f}W. Escalfant dipòsit cap a 80ºC!",
                     "default",
                     "sun"
                 )
+                return

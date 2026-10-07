@@ -195,6 +195,9 @@ class CasetaGuardian:
         self.termo_last_heated_date = "2026-08-28"
         self.termo_last_60_ts = None
         self.termo_est_temp = 60.0
+        self.termo_surplus_done = False
+        self.termo_morning_done = False
+        self.termo_notified_knob_60 = False
         self.last_termo_calc_time = time.time()
 
         # Recuperació d'estat persistent a disc
@@ -583,9 +586,10 @@ class CasetaGuardian:
             self.mqtt_client.publish(topic, payload)
             self.last_applied_min_soc = target
 
-    def sync_grid_setpoint(self):
+    def sync_grid_setpoint(self, now_madrid=None):
         """Modula dinàmicament el Grid Setpoint de Victron ESS."""
         now = time.time()
+        now_madrid = now_madrid or get_madrid_now()
 
         termo_p = self.termo_status.get("power_w", 0.0) if self.termo_status else 0.0
         termo_on = self.termo_status.get("is_on", False) if self.termo_status else False
@@ -599,16 +603,33 @@ class CasetaGuardian:
             return
         self.last_grid_setpoint_eval_time = now
 
-        # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W) -> Importació a 4.5A (Límit segur contractat 5A)
+        # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W) -> Blindatge bateria (màx 800W descàrrega)
         if is_termo_active:
             # Reconnexió immediata a xarxa si el MultiPlus estava en Inverter Only (0s d'espera)
             if self.vebus_mode == 2:
-                self.set_multiplus_mode(3, f"♨️ Termo Actiu ({termo_p:.0f}W) -> Reconnexió Immediata a Xarxa (Suport 4.5A)")
+                self.set_multiplus_mode(3, f"♨️ Termo Actiu ({termo_p:.0f}W) -> Reconnexió Immediata a Xarxa")
 
             grid_v_safe = self.grid_v if getattr(self, "grid_v", 0.0) >= 190.0 else 230.0
-            # 4.5A exactes ajustats a la tensió real de la xarxa (ex: 222V * 4.5A = 1000W; 230V * 4.5A = 1035W)
-            target = round(min(1050.0, max(900.0, 4.5 * grid_v_safe)))
-            reason = f"♨️ Termo Actiu ({termo_p:.0f}W) -> Setpoint {target:.0f}W (4.5A a {grid_v_safe:.1f}V - Blindatge Bateria)"
+            max_grid_w = round(min(1050.0, max(900.0, 4.5 * grid_v_safe)))
+            time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
+
+            # A. Matinada Vall P3 (04:00h - 07:00h sense sol): suport de xarxa econòmica 4.5A
+            if 4.0 <= time_decimal < 7.0:
+                target = max_grid_w
+                reason = f"🌙 Termo P3 Matinada ({termo_p:.0f}W) -> Setpoint {target:.0f}W (Suport Vall 4.5A)"
+            else:
+                # B. Diürn: Sol prioritari, i la bateria aporta com a MÀXIM 800 W (~15A)
+                net_deficit = self.ac_loads - self.pv_p
+                if net_deficit <= 0.0:
+                    target = 50.0
+                    reason = f"☀️ Termo 100% Solar (Sol {self.pv_p:.0f}W >= Casa {self.ac_loads:.0f}W) -> Setpoint 50W"
+                elif net_deficit <= 800.0:
+                    target = 50.0
+                    reason = f"🔋 Termo Suport Bateria Suau ({net_deficit:.0f}W <= 800W, Sol {self.pv_p:.0f}W) -> Setpoint 50W"
+                else:
+                    grid_needed = net_deficit - 800.0
+                    target = round(min(max_grid_w, max(50.0, grid_needed)))
+                    reason = f"⚡ Suport Xarxa ({grid_needed:.0f}W) per limitar bateria a 800W -> Setpoint {target:.0f}W"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
@@ -629,13 +650,13 @@ class CasetaGuardian:
                 reason = "Estable"
 
         if self.last_grid_setpoint != target:
+            self.last_grid_setpoint = target
             try:
                 import dbus
                 bus = dbus.SystemBus()
                 obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
                 obj.SetValue(dbus.Double(target), dbus_interface="com.victronenergy.BusItem")
                 log.info(f"⚙️ Sincronitzat Grid Setpoint a Cerbo GX: {target:.0f} W [{reason}]")
-                self.last_grid_setpoint = target
             except Exception as e:
                 log.warning(f"No s'ha pogut actualitzar Grid Setpoint per D-Bus: {e}")
 
@@ -704,6 +725,8 @@ class CasetaGuardian:
             "max_cell_delta_today": round(self.max_cell_delta_today, 1),
             "soh_bms": round(self.soh, 0),
             "termo_heated_today": getattr(self, "termo_heated_today", False),
+            "termo_surplus_done": getattr(self, "termo_surplus_done", False),
+            "termo_morning_done": getattr(self, "termo_morning_done", False),
             "termo_last_heated_date": getattr(self, "termo_last_heated_date", "2026-08-27"),
             "termo_last_60_ts": getattr(self, "termo_last_60_ts", None),
             "termo_est_temp": round(getattr(self, "termo_est_temp", 60.0), 1),
@@ -761,6 +784,9 @@ class CasetaGuardian:
             self.termo_end_time_str = ""
             self.termo_active_seconds_today = 0.0
             self.termo_currently_heating = False
+            self.termo_surplus_done = False
+            self.termo_morning_done = False
+            self.termo_notified_knob_60 = False
             self.doble_kwh_today = 0.0
             log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str} (Festiu/CapSetmana: {self.is_holiday})")
 
@@ -817,8 +843,8 @@ class CasetaGuardian:
                     log.info(f"♨️ [TERMO] Inici de cicle de calfament a les {self.termo_start_time_str} ({termo_p:.0f} W)")
 
                 # Model Físic Calorimètric (100L): +8.605 ºC per kWh injectat
-                # Límit 59.5 ºC per càlcul d'energia (els 60.0 ºC només es fixen si el termòstat Ariston talla a <50W)
-                self.termo_est_temp = min(59.5, self.termo_est_temp + (kwh_inc * 8.605))
+                # Límit 80.0 ºC per càlcul d'energia (acumulació d'excedents solars)
+                self.termo_est_temp = min(80.0, self.termo_est_temp + (kwh_inc * 8.605))
             else:
                 # Transició de calfant a repòs
                 if self.termo_currently_heating:
