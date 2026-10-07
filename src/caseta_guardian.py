@@ -197,6 +197,9 @@ class CasetaGuardian:
         self.termo_est_temp = 60.0
         self.termo_surplus_done = False
         self.termo_morning_done = False
+        self.termo_night_chunk1_done = False
+        self.termo_night_chunk1_active = False
+        self.termo_solar_heating_active = False
         self.termo_notified_knob_60 = False
         self.last_termo_calc_time = time.time()
 
@@ -821,6 +824,9 @@ class CasetaGuardian:
             self.termo_morning_done = False
             self.termo_notified_knob_60 = False
             self.termo_notified_60_reached = False
+            self.termo_night_chunk1_done = False
+            self.termo_night_chunk1_active = False
+            self.termo_solar_heating_active = False
             self.doble_kwh_today = 0.0
             log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str} (Festiu/CapSetmana: {self.is_holiday})")
 

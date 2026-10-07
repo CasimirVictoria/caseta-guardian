@@ -327,17 +327,24 @@ class StateMachine:
                 guardian.termo_low_power_start_time = None
 
             # 2. Sòl de Seguretat Dinàmic de Bateria per Previsió (SAI Prioritari)
-            rem_sun = getattr(guardian, "remaining_kwh_today", 3.0)
-            today_est = getattr(guardian, "today_kwh_est", 5.0)
-
-            # Previsió bona: sol restant >= 3.5 kWh o dia radiant >= 4.5 kWh abans de les 15:30h -> Sòl 65%
-            if (rem_sun >= 3.5 or today_est >= 4.5) and time_decimal < 15.5:
-                min_soc_termo = 65.0
-            # Previsió dolenta o vesprada (>16:00h) -> Sòl 80%
-            elif rem_sun < 2.5 or time_decimal >= 16.0 or getattr(guardian, "rain_today", 0.0) >= 0.5:
-                min_soc_termo = 80.0
+            if getattr(guardian, "termo_night_chunk1_active", False):
+                min_soc_termo = 75.0
+            elif 4.0 <= time_decimal < 6.5:
+                min_soc_termo = 70.0
+            elif time_decimal < 8.0:
+                min_soc_termo = 75.0
             else:
-                min_soc_termo = 72.0
+                rem_sun = getattr(guardian, "remaining_kwh_today", 3.0)
+                today_est = getattr(guardian, "today_kwh_est", 5.0)
+
+                # Previsió bona: sol restant >= 3.5 kWh o dia radiant >= 4.5 kWh abans de les 15:30h -> Sòl 65%
+                if (rem_sun >= 3.5 or today_est >= 4.5) and time_decimal < 15.5:
+                    min_soc_termo = 65.0
+                # Previsió dolenta o vesprada (>16:00h) -> Sòl 80%
+                elif rem_sun < 2.5 or time_decimal >= 16.0 or getattr(guardian, "rain_today", 0.0) >= 0.5:
+                    min_soc_termo = 80.0
+                else:
+                    min_soc_termo = 72.0
 
             if guardian.soc < min_soc_termo:
                 self.tuya.send_termo_command(
@@ -364,7 +371,7 @@ class StateMachine:
                 guardian.high_discharge_start_time = None
 
             # 4. Fi de la Finestra Matinal (a les 06:30h exactes per no solapar esmorzars/cafetera)
-            if 6.5 <= time_decimal < 9.5:
+            if 6.5 <= time_decimal < 8.0:
                 self.tuya.send_termo_command(
                     power=False,
                     reason="🕒 Fi Finestra Matinada (06:30h): Desconnexió per evitar solapar consums de matí (cafetera, microones)"
@@ -372,8 +379,21 @@ class StateMachine:
                 guardian.termo_low_power_start_time = None
                 return
 
-            # 5. Fi de la Finestra Solar Diürna (a les 17:00h en caure el sol)
-            if time_decimal >= 17.0:
+            # 5. Fi del Cicle de Pre-calfament Nocturn (02:30h límit o bateria <75%)
+            if getattr(guardian, "termo_night_chunk1_active", False):
+                if time_decimal >= 2.5 or guardian.soc < 75.0:
+                    guardian.termo_night_chunk1_active = False
+                    guardian.termo_night_chunk1_done = True
+                    self.tuya.send_termo_command(
+                        power=False,
+                        reason=f"🌙 Fi Tanda 1 Nit (01:00h - 02:30h): Bateria {guardian.soc:.1f}% -> Pausa per a recuperació en P3"
+                    )
+                    guardian.termo_low_power_start_time = None
+                    return
+
+            # 6. Fi de la Finestra Solar Diürna (a les 17:00h en caure el sol, només si era cicle solar d'excedents)
+            if 17.0 <= time_decimal < 17.2 and getattr(guardian, "termo_solar_heating_active", False):
+                guardian.termo_solar_heating_active = False
                 self.tuya.send_termo_command(
                     power=False,
                     reason="🕒 Fi Finestra Solar Diürna (17:00h): Dipòsit calfat per a la nit -> Apagat d'endoll per preservar bateria"
@@ -393,15 +413,27 @@ class StateMachine:
             if temp_actual < 54.0:
                 guardian.termo_surplus_done = False
 
-            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:15h) - Dutxa Garantida a 60ºC
-            if 4.0 <= time_decimal < 6.25 and grid_present and guardian.soc >= 70.0:
-                # Si l'aigua ja està a >= 58ºC, NO cal encendre'l gens! (0 € gastats)
+            # 🌙 TANDA 1 NIT: Pre-calfament Nocturn Vall P3 (01:00h a 02:15h) si bateria >= 94%
+            if 1.0 <= time_decimal < 2.25 and grid_present and guardian.soc >= 94.0:
+                if temp_actual < 58.0 and not getattr(guardian, "termo_night_chunk1_done", False):
+                    guardian.termo_night_chunk1_active = True
+                    self.start_termo_safely(
+                        guardian,
+                        f"🌙 Tanda 1 Nit P3 ({now_madrid.strftime('%H:%M')}h): Pre-calfament nocturn fins al 75% bateria",
+                        "🌙 Termo: Tanda 1 Pre-calfament",
+                        f"Iniciant tanda 1 a la 01:00h en Vall P3 a 0.07 €/kWh. Bateria al {guardian.soc:.1f}%.",
+                        "moon"
+                    )
+                    return
+
+            # 🌙 TANDA 2 NIT: Rematada Matinal Vall P3 (04:00h a 06:15h) - Dutxa Garantida a 60ºC
+            if 4.0 <= time_decimal < 6.25 and grid_present and guardian.soc >= 88.0:
                 if temp_actual < 58.0 and not getattr(guardian, "termo_morning_done", False):
                     self.start_termo_safely(
                         guardian,
-                        f"🌙 Matinada Vall P3 ({now_madrid.strftime('%H:%M')}h): Termo a {temp_actual:.1f}ºC -> Calfament a 60ºC per a la dutxa",
-                        "🌙 Termo Engegat a la Matinada (Vall P3)",
-                        f"Aigua a {temp_actual:.1f}ºC. Escalfant fins a 60ºC a 0.07 €/kWh per a la dutxa del matí!",
+                        f"🌙 Tanda 2 Matinada P3 ({now_madrid.strftime('%H:%M')}h): Rematada a 60ºC per a la dutxa",
+                        "🌙 Termo: Tanda 2 Matinada",
+                        f"Escalfant dipòsit fins a 60ºC a 0.07 €/kWh per a la dutxa del matí!",
                         "moon"
                     )
                     return
@@ -413,6 +445,7 @@ class StateMachine:
 
             if 9.5 <= time_decimal < 17.0 and can_heat_surplus and (solar_surplus_ok or detecting_export):
                 guardian.termo_notified_knob_60 = False
+                guardian.termo_solar_heating_active = True
                 motiu = "⚡ Desviador Anti-Abocament" if detecting_export else "☀️ Excedent Solar Diürn"
                 self.start_termo_safely(
                     guardian,
