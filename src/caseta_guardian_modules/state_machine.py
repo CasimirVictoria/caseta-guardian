@@ -315,14 +315,16 @@ class StateMachine:
                 return
 
             # 3. Protecció d'intensitat màxima de descàrrega de bateria (>18A sostinguts per >20s)
+            # Només actua com a última línia de defensa si la xarxa no ha pogut assumir la càrrega
             if getattr(guardian, "bat_i", 0.0) < -18.0:
                 if guardian.high_discharge_start_time is None:
                     guardian.high_discharge_start_time = now
                 elif now - guardian.high_discharge_start_time >= 20.0:
                     self.tuya.send_termo_command(
                         power=False,
-                        reason=f"⚡ Escut Bateria: Descàrrega excessiva ({abs(guardian.bat_i):.1f}A > 18A per >20s)"
+                        reason=f"⚡ Escut Bateria: Descàrrega excessiva ({abs(guardian.bat_i):.1f}A > 18A per >20s). Pausa de 3 minuts."
                     )
+                    guardian.termo_cooldown_until = now + 180.0
                     guardian.high_discharge_start_time = None
                     return
             else:
@@ -339,6 +341,10 @@ class StateMachine:
 
         # Si el termo està apagat:
         else:
+            # Respectar temps de refredament si s'ha disparat l'escut de bateria
+            if now < getattr(guardian, "termo_cooldown_until", 0.0):
+                return
+
             temp_actual = getattr(guardian, "termo_est_temp", 60.0)
 
             # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:45h) - Dutxa Garantida a 60ºC

@@ -599,8 +599,10 @@ class CasetaGuardian:
         termo_state_changed = (is_termo_active and (self.last_grid_setpoint or 0) < 500.0) or \
                               (not is_termo_active and (self.last_grid_setpoint or 0) >= 500.0)
 
-        if not termo_state_changed and (now - self.last_grid_setpoint_eval_time < 20):
-            return
+        # Amb termo actiu, resposta immediata cada segon; en repòs, throttle de 20s
+        if not is_termo_active:
+            if not termo_state_changed and (now - self.last_grid_setpoint_eval_time < 20):
+                return
         self.last_grid_setpoint_eval_time = now
 
         # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W) -> Blindatge bateria (màx 800W descàrrega)
@@ -620,16 +622,21 @@ class CasetaGuardian:
             else:
                 # B. Diürn: Sol prioritari, i la bateria aporta com a MÀXIM 800 W (~15A)
                 net_deficit = self.ac_loads - self.pv_p
-                if net_deficit <= 0.0:
+
+                # Si la bateria s'està descarregant a més de 800W per mesura directa BMS:
+                bat_discharge_w = abs(self.bat_p) if getattr(self, "bat_p", 0.0) < 0.0 else 0.0
+                effective_deficit = max(net_deficit, bat_discharge_w)
+
+                if effective_deficit <= 0.0:
                     target = 50.0
                     reason = f"☀️ Termo 100% Solar (Sol {self.pv_p:.0f}W >= Casa {self.ac_loads:.0f}W) -> Setpoint 50W"
-                elif net_deficit <= 800.0:
+                elif effective_deficit <= 800.0:
                     target = 50.0
-                    reason = f"🔋 Termo Suport Bateria Suau ({net_deficit:.0f}W <= 800W, Sol {self.pv_p:.0f}W) -> Setpoint 50W"
+                    reason = f"🔋 Termo Suport Bateria Suau ({effective_deficit:.0f}W <= 800W, Sol {self.pv_p:.0f}W) -> Setpoint 50W"
                 else:
-                    grid_needed = net_deficit - 800.0
+                    grid_needed = effective_deficit - 800.0
                     target = round(min(max_grid_w, max(50.0, grid_needed)))
-                    reason = f"⚡ Suport Xarxa ({grid_needed:.0f}W) per limitar bateria a 800W -> Setpoint {target:.0f}W"
+                    reason = f"⚡ Suport Xarxa Dinàmic ({grid_needed:.0f}W) per limitar bateria a 800W -> Setpoint {target:.0f}W"
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
@@ -649,7 +656,9 @@ class CasetaGuardian:
                 target = self.last_grid_setpoint if self.last_grid_setpoint is not None else 100.0
                 reason = "Estable"
 
-        if self.last_grid_setpoint != target:
+        cur_setpoint = self.last_grid_setpoint if self.last_grid_setpoint is not None else 50.0
+        deadband = 50.0 if is_termo_active else 20.0
+        if self.last_grid_setpoint is None or abs(target - cur_setpoint) >= deadband or termo_state_changed:
             self.last_grid_setpoint = target
             try:
                 import dbus
