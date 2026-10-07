@@ -682,6 +682,24 @@ class CasetaGuardian:
             except Exception as e:
                 log.warning(f"No s'ha pogut actualitzar Grid Setpoint per D-Bus: {e}")
 
+    def set_grid_setpoint_direct(self, target_w: float, reason: str = "Pre-setpoint"):
+        """Aplica un setpoint de xarxa directament a Cerbo GX sense esperar al cicle periòdic."""
+        self.last_grid_setpoint = float(target_w)
+        self.last_grid_setpoint_eval_time = time.time()
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/AcPowerSetPoint")
+            obj.SetValue(dbus.Double(float(target_w)), dbus_interface="com.victronenergy.BusItem")
+            log.info(f"⚙️ [DIRECT] Sincronitzat Grid Setpoint a Cerbo GX: {target_w:.0f} W [{reason}]")
+        except Exception as e:
+            log.warning(f"No s'ha pogut actualitzar Grid Setpoint directe per D-Bus: {e}")
+        try:
+            topic = f"W/{self.portal_id}/settings/0/Settings/CGwacs/AcPowerSetPoint"
+            self.mqtt_client.publish(topic, json.dumps({"value": float(target_w)}))
+        except Exception:
+            pass
+
     def set_multiplus_mode(self, target_mode: int, reason: str):
         now = time.time()
         if now - self.last_mode_switch_time < 20:
