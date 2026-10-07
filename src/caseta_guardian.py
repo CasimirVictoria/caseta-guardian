@@ -809,6 +809,7 @@ class CasetaGuardian:
             self.termo_surplus_done = False
             self.termo_morning_done = False
             self.termo_notified_knob_60 = False
+            self.termo_notified_60_reached = False
             self.doble_kwh_today = 0.0
             log.info(f"🔄 Reset d'acumulats diaris per al nou dia: {today_str} (Festiu/CapSetmana: {self.is_holiday})")
 

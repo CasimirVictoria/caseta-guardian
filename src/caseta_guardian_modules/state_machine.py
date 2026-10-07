@@ -248,21 +248,30 @@ class StateMachine:
                     guardian.termo_est_temp = 60.0
                     guardian.termo_last_60_ts = now
                     guardian.termo_heated_today = True
-                    guardian.termo_surplus_done = True
-                    guardian.termo_low_power_start_time = None
 
-                    log.info("♨️ [TERMO] Termòstat intern Ariston ha tallat a 60ºC. Dipòsit ple!")
-                    self.tuya.send_termo_command(
-                        power=False,
-                        reason="♨️ Termòstat Ariston Assolit: Consum <50W -> Aigua calenta a 60ºC Assolida (Dipòsit Ple)!"
-                    )
-                    self.notifications.send_notification(
-                        "♨️ Aigua Calenta a 60ºC Assolida",
-                        "El dipòsit de 100L ha arribat als 60ºC i ha tallat el termòstat. Aigua calenta a punt per a la dutxa!",
-                        "default",
-                        "tada"
-                    )
-                    return
+                    if not getattr(guardian, "termo_notified_60_reached", False):
+                        guardian.termo_notified_60_reached = True
+                        log.info("♨️ [TERMO] Termòstat intern Ariston ha tallat a 60ºC. Dipòsit ple! Mantenint endoll actiu per a manteniment tèrmic solar.")
+                        self.notifications.send_notification(
+                            "♨️ Aigua Calenta a 60ºC Assolida",
+                            "El dipòsit de 100L ha arribat als 60ºC. L'endoll es manté actiu durant el dia per a manteniment automàtic de temperatura!",
+                            "default",
+                            "tada"
+                        )
+
+                    # Si estem a la matinada P3 (abans de les 06:30h), apaguem l'endoll
+                    if time_decimal < 6.5:
+                        guardian.termo_morning_done = True
+                        self.tuya.send_termo_command(
+                            power=False,
+                            reason="♨️ Termòstat Ariston Assolit a la Matinada P3: Aigua a 60ºC a punt per a la dutxa"
+                        )
+                        guardian.termo_low_power_start_time = None
+                        return
+
+                    # En canvi, en finestra solar diürna (09:30h - 17:00h), NO apaguem l'endoll!
+                    # El termòstat de l'Ariston ja talla físicament (0W). Si l'aigua es refreda
+                    # un poc, tornarà a connectar sol aprofitant el sol sense desgastar el relé Tuya.
             else:
                 guardian.termo_low_power_start_time = None
 
@@ -303,11 +312,20 @@ class StateMachine:
             else:
                 guardian.high_discharge_start_time = None
 
-            # 4. Fi de la Finestra Matinal (passades les 07:00h en P3)
-            if 7.0 <= time_decimal < 9.0 and getattr(guardian, "termo_est_temp", 60.0) >= 58.0:
+            # 4. Fi de la Finestra Matinal (a les 06:30h exactes per no solapar esmorzars/cafetera)
+            if 6.5 <= time_decimal < 9.5:
                 self.tuya.send_termo_command(
                     power=False,
-                    reason="🕒 Fi Finestra Matinada (07:00h): Aigua calenta a punt per a la dutxa"
+                    reason="🕒 Fi Finestra Matinada (06:30h): Desconnexió per evitar solapar consums de matí (cafetera, microones)"
+                )
+                guardian.termo_low_power_start_time = None
+                return
+
+            # 5. Fi de la Finestra Solar Diürna (a les 17:00h en caure el sol)
+            if time_decimal >= 17.0:
+                self.tuya.send_termo_command(
+                    power=False,
+                    reason="🕒 Fi Finestra Solar Diürna (17:00h): Dipòsit calfat per a la nit -> Apagat d'endoll per preservar bateria"
                 )
                 guardian.termo_low_power_start_time = None
                 return
@@ -320,8 +338,8 @@ class StateMachine:
 
             temp_actual = getattr(guardian, "termo_est_temp", 60.0)
 
-            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:45h) - Dutxa Garantida a 60ºC
-            if 4.0 <= time_decimal < 6.75 and grid_present and guardian.soc >= 70.0:
+            # 🌙 CAS A: Encesa de Matinada Vall P3 (04:00h a 06:15h) - Dutxa Garantida a 60ºC
+            if 4.0 <= time_decimal < 6.25 and grid_present and guardian.soc >= 70.0:
                 # Si l'aigua ja està a >= 58ºC, NO cal encendre'l gens! (0 € gastats)
                 if temp_actual < 58.0 and not getattr(guardian, "termo_morning_done", False):
                     if guardian.vebus_mode == 2:
