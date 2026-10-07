@@ -615,11 +615,10 @@ class CasetaGuardian:
         self.last_grid_setpoint_eval_time = now
 
         # ♨️ 1. GESTIÓ AMB TERMO ACTIU (>= 500 W) -> Blindatge bateria (màx 800W descàrrega)
-        if is_termo_active:
-            # Reconnexió immediata a xarxa si el MultiPlus estava en Inverter Only (0s d'espera)
-            if self.vebus_mode == 2:
-                self.set_multiplus_mode(3, f"♨️ Termo Actiu ({termo_p:.0f}W) -> Reconnexió Immediata a Xarxa")
+        if termo_on and self.vebus_mode == 2:
+            self.set_multiplus_mode(3, f"🔌 Endoll Termo Encès -> Reconnexió Immediata a Xarxa Preventiva")
 
+        if is_termo_active:
             grid_v_safe = self.grid_v if getattr(self, "grid_v", 0.0) >= 190.0 else 230.0
             max_grid_w = round(min(1050.0, max(900.0, 4.5 * grid_v_safe)))
             time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
@@ -653,8 +652,11 @@ class CasetaGuardian:
 
         # ☕ 2. GESTIÓ AMB TERMO EN REPÒS (Sol de Migdia / Tarda)
         else:
+            if termo_on:
+                target = 200.0
+                reason = "♨️ Termo Encès en Repòs -> Setpoint 200W (Mínim Coixí Preventiu)"
             # ☀️ A. Si hi ha generació solar abundant (Sol >= 400W o Sol >= Consum Casa):
-            if self.pv_p >= 400.0 or (self.pv_p >= self.ac_loads and self.pv_p > 150.0):
+            elif self.pv_p >= 400.0 or (self.pv_p >= self.ac_loads and self.pv_p > 150.0):
                 target = 50.0
                 reason = f"☀️ Excedent Solar Diürn ({self.pv_p:.0f}W) -> Setpoint 50W (Aprofitament Solar Màxim)"
             # 🔋 B. Si la bateria està a la zona alta (SoC >= 88%):
@@ -1003,7 +1005,11 @@ class CasetaGuardian:
             if parts[0] == "N" and len(parts) > 1 and len(parts[1]) == 12:
                 self.portal_id = parts[1]
 
-            raw_payload = json.loads(msg.payload.decode())
+            payload_str = msg.payload.decode().strip()
+            try:
+                raw_payload = json.loads(payload_str)
+            except Exception:
+                raw_payload = payload_str
             val = raw_payload.get("value") if isinstance(raw_payload, dict) else raw_payload
             topic = msg.topic
 
@@ -1045,6 +1051,25 @@ class CasetaGuardian:
                 s2 = self.clima_sensors.get("sensor_2") or {}
                 if s2.get("presencia"):
                     self.last_presence_seen_time = time.time()
+            elif topic in ("caseta/termo/set", "caseta/termo/cmd") or topic.endswith("/termo/set") or topic.endswith("/termo/cmd"):
+                cmd_raw = str(val).lower() if not isinstance(val, dict) else str(val.get("power", val.get("state", ""))).lower()
+                is_turn_on = cmd_raw in ("on", "true", "1", "start", "engegar", "encen")
+                is_turn_off = cmd_raw in ("off", "false", "0", "stop", "aturar", "apagar")
+                if is_turn_on:
+                    log.info("📩 [MQTT CMD] Rebut comandament manual per engegar el termo amb la seqüència segura!")
+                    self.termo_surplus_done = False
+                    self.termo_low_power_start_time = None
+                    self.state_machine.start_termo_safely(
+                        self,
+                        reason="Ordre manual d'encesa segura (MQTT)",
+                        notif_title="♨️ Termo Engegat Manualment",
+                        notif_msg="Encesa segura en 3 passos sol·licitada per l'usuari.",
+                        notif_icon="sun"
+                    )
+                elif is_turn_off:
+                    log.info("📩 [MQTT CMD] Rebut comandament manual per apagar el termo!")
+                    self.termo_pending_turn_on = None
+                    self.tuya.send_termo_command(power=False, reason="Ordre manual d'apagat (MQTT)")
 
         except Exception:
             pass
