@@ -865,8 +865,8 @@ class CasetaGuardian:
                     log.info(f"♨️ [TERMO] Inici de cicle de calfament a les {self.termo_start_time_str} ({termo_p:.0f} W)")
 
                 # Model Físic Calorimètric (100L): +8.605 ºC per kWh injectat
-                # Límit 80.0 ºC per càlcul d'energia (acumulació d'excedents solars)
-                self.termo_est_temp = min(80.0, self.termo_est_temp + (kwh_inc * 8.605))
+                # Límit 60.0 ºC per càlcul d'energia (rodeta Ariston a 60ºC)
+                self.termo_est_temp = min(60.0, self.termo_est_temp + (kwh_inc * 8.605))
             else:
                 # Transició de calfant a repòs
                 if self.termo_currently_heating:

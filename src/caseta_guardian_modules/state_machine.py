@@ -189,7 +189,7 @@ class StateMachine:
             if guardian.grid_p is not None and guardian.grid_p < -50.0 and guardian.soc >= 88.0:
                 # Abans de desconnectar a Inverter Only, comprovem si podem encendre el Termo com a desviador d'excedents!
                 termo_on = guardian.termo_status.get("is_on", False) if guardian.termo_status else False
-                can_heat = (getattr(guardian, "termo_est_temp", 60.0) < 78.0) and not getattr(guardian, "termo_surplus_done", False)
+                can_heat = (getattr(guardian, "termo_est_temp", 60.0) < 58.0) and not getattr(guardian, "termo_surplus_done", False)
                 if not termo_on and can_heat:
                     log.info(f"⚡ Abocament detectat ({abs(guardian.grid_p):.0f}W) amb SoC {guardian.soc:.1f}% -> Encenent Termo com a desviador d'excedents!")
                     self.tuya.send_termo_command(power=True, reason=f"⚡ Desviador Anti-Abocament ({abs(guardian.grid_p):.0f}W)")
@@ -240,58 +240,31 @@ class StateMachine:
 
         # Si el termo està encès, avaluem quan cal apagar-lo o gestionar el termòstat mecànic:
         if is_on:
-            # 1. Termòstat Intern Mecànic Ariston Assolit (<50W durant >90s)
+            # 1. Termòstat Intern Mecànic Ariston Assolit (<50W durant >90s a 60ºC)
             if termo_p < 50.0:
                 if guardian.termo_low_power_start_time is None:
                     guardian.termo_low_power_start_time = now
                 elif now - guardian.termo_low_power_start_time >= 90.0:
-                    # Cas A: Ha tallat al voltant de 60ºC (la rodeta física està a 60ºC)
-                    if getattr(guardian, "termo_est_temp", 60.0) < 70.0:
-                        guardian.termo_est_temp = 60.0
-                        guardian.termo_last_60_ts = now
-                        guardian.termo_heated_today = True
+                    guardian.termo_est_temp = 60.0
+                    guardian.termo_last_60_ts = now
+                    guardian.termo_heated_today = True
+                    guardian.termo_surplus_done = True
+                    guardian.termo_low_power_start_time = None
 
-                        if not getattr(guardian, "termo_notified_knob_60", False):
-                            guardian.termo_notified_knob_60 = True
-                            log.info("♨️ [TERMO] Termòstat mecànic ha tallat a 60ºC. Notificant usuari per si vol pujar rodeta a 80ºC.")
-                            self.notifications.send_notification(
-                                "♨️ Termo a 60ºC (Pots pujar a 80º?)",
-                                "El termòstat mecànic del termo ha tallat a 60ºC però hi ha sol! Si vols aprofitar l'excedent, puja la rodeta física a 80ºC.",
-                                "default",
-                                "bath"
-                            )
-
-                        # Si han passat més de 10 minuts en repòs (<50W) i no s'ha pujat la rodeta, apaguem l'endoll
-                        if now - guardian.termo_low_power_start_time >= 600.0:
-                            self.tuya.send_termo_command(
-                                power=False,
-                                reason="♨️ Termòstat Ariston tallat a 60ºC per >10 min -> Apagat d'endoll fins a nova ordre o excedent"
-                            )
-                            guardian.termo_low_power_start_time = None
-                            return
-
-                    # Cas B: Ha tallat a la zona alta (>= 70ºC) -> Assolits 80ºC!
-                    else:
-                        guardian.termo_est_temp = 80.0
-                        guardian.termo_surplus_done = True
-                        guardian.termo_low_power_start_time = None
-                        self.tuya.send_termo_command(
-                            power=False,
-                            reason="♨️ Termòstat Ariston Assolit: Consum <50W -> Aigua calenta a 80ºC Assolida (Dipòsit Ple)!"
-                        )
-                        self.notifications.send_notification(
-                            "♨️ Aigua Calenta a 80ºC Assolida",
-                            "El dipòsit de 100L ha completat el cicle solar complet. Aigua a màxima temperatura (80ºC)!",
-                            "default",
-                            "tada"
-                        )
-                        return
+                    log.info("♨️ [TERMO] Termòstat intern Ariston ha tallat a 60ºC. Dipòsit ple!")
+                    self.tuya.send_termo_command(
+                        power=False,
+                        reason="♨️ Termòstat Ariston Assolit: Consum <50W -> Aigua calenta a 60ºC Assolida (Dipòsit Ple)!"
+                    )
+                    self.notifications.send_notification(
+                        "♨️ Aigua Calenta a 60ºC Assolida",
+                        "El dipòsit de 100L ha arribat als 60ºC i ha tallat el termòstat. Aigua calenta a punt per a la dutxa!",
+                        "default",
+                        "tada"
+                    )
+                    return
             else:
                 guardian.termo_low_power_start_time = None
-                # Si torna a consumir (>500W) després d'haver estat avisat a 60ºC, l'usuari ha apujat la rodeta a 80ºC!
-                if getattr(guardian, "termo_notified_knob_60", False) and termo_p >= 500.0:
-                    log.info(f"♨️ [TERMO] Rodeta física apujada per l'usuari! Consum reactivat a {termo_p:.0f}W cap a 80ºC.")
-                    guardian.termo_notified_knob_60 = False
 
             # 2. Sòl de Seguretat Dinàmic de Bateria per Previsió (SAI Prioritari)
             rem_sun = getattr(guardian, "remaining_kwh_today", 3.0)
@@ -366,8 +339,8 @@ class StateMachine:
                     )
                     return
 
-            # ☀️ CAS B: Excedents Solars Diürns (09:30h - 17:00h) - Desviador cap a 80ºC
-            can_heat_surplus = (temp_actual < 78.0) and not getattr(guardian, "termo_surplus_done", False)
+            # ☀️ CAS B: Excedents Solars Diürns (09:30h - 17:00h) - Desviador cap a 60ºC
+            can_heat_surplus = (temp_actual < 58.0) and not getattr(guardian, "termo_surplus_done", False)
             detecting_export = (guardian.grid_p is not None and guardian.grid_p < -30.0 and guardian.soc >= 85.0)
             solar_surplus_ok = (guardian.soc >= 88.0 and guardian.pv_p >= 500.0) or (guardian.soc >= 92.0 and guardian.pv_p >= 250.0)
 
@@ -379,11 +352,11 @@ class StateMachine:
                 motiu = "⚡ Desviador Anti-Abocament" if detecting_export else "☀️ Excedent Solar Diürn"
                 self.tuya.send_termo_command(
                     power=True,
-                    reason=f"{motiu}: SoC {guardian.soc:.1f}%, Sol {guardian.pv_p:.0f}W, Aigua {temp_actual:.1f}ºC -> Escalfant cap a 80ºC"
+                    reason=f"{motiu}: SoC {guardian.soc:.1f}%, Sol {guardian.pv_p:.0f}W, Aigua {temp_actual:.1f}ºC -> Escalfant cap a 60ºC"
                 )
                 self.notifications.send_notification(
                     "♨️ Termo Engegat per Excedents Solars",
-                    f"{motiu}! Bateria al {guardian.soc:.1f}% i Sol a {guardian.pv_p:.0f}W. Escalfant dipòsit cap a 80ºC!",
+                    f"{motiu}! Bateria al {guardian.soc:.1f}% i Sol a {guardian.pv_p:.0f}W. Escalfant dipòsit cap a 60ºC!",
                     "default",
                     "sun"
                 )
