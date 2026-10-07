@@ -519,13 +519,8 @@ class CasetaGuardian:
             target = 95.0
             phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
 
-        # 2. 🌙 Nit i Matinada Vall P3 (00:00h a 07:59h Madrid): 100% Minimum SOC & Càrrega Plena a 0.08 €/kWh
-        elif time_decimal < 8.0:
-            target = 100.0
-            phase_name = "🌙 Nit i Matinada Vall P3 (100% Minimum SOC & Zero Descàrrega a 0.08 €/kWh)"
-
-        # 3. ☀️ Finestra Diürna Adaptativa (08:00h a 16:29h Madrid): Modulació Dinàmica per Sol Real
-        elif 8.0 <= time_decimal < 16.5:
+        # 2. ☀️ Finestra Diürna Solar (08:00h a 16:59h Madrid): Modulació Dinàmica per Sol Real
+        elif 8.0 <= time_decimal < 17.0:
             today_est = getattr(self, "today_kwh_est", 4.5)
             rem_sun = max(0.0, today_est - self.solar_kwh_today)
             cur_pv = getattr(self, "pv_p", 0.0)
@@ -547,20 +542,10 @@ class CasetaGuardian:
                 target = 88.0
                 phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
 
-        # 4. ⛈️ Temps Advers / Pluja / Tronades a la Tarda-Vespre (>= 16:30h sense sol i amb pluja o risc):
-        elif time_decimal >= 16.5 and (getattr(self, "rain_today", 0.0) >= 0.5 or getattr(self, "blackout_risk", 0) >= 30 or getattr(self, "grid_outage_notified", False)):
-            target = 100.0
-            phase_name = f"⛈️ Temps Advers / Pluja ({getattr(self, 'rain_today', 0.0):.1f} mm) -> 100% Blindatge SAI"
-
-        # 5. 🏖️ Cap de Setmana o Festiu a la Tarda/Vespre (Preu Vall 24h continu a ~7 cts):
-        elif is_weekend_or_hol and time_decimal >= 18.0:
-            target = 100.0
-            phase_name = "🏖️ Cap de Setmana/Festiu Vespre (100% Top-Balancing a 7 cts)"
-
-        # 6. 🌇 Tarda / Vespre Feiners (16:30h a 23:59h Madrid):
+        # 3. 🌙 Blindatge SAI Total (17:00h a 07:59h Madrid): 100% Reserva Nocturna & Protecció Bateria
         else:
-            target = 85.0
-            phase_name = "🌇 Tarda / Vespre Resilient (85% Màxima Seguretat & SAI)"
+            target = 100.0
+            phase_name = "🌙 Blindatge SAI Total Nocturn (100% Reserva & Salut Bateria)"
 
         # 👤 Comprovació de consigna manual de l'usuari a Cerbo GX a la tarda/vespre/nit:
         # Si l'usuari ha fixat manualment un límit superior (ex: 100% per seguretat/tronades), no el rebaixem.
