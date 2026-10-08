@@ -347,6 +347,9 @@ class StateMachine:
                     min_soc_termo = 72.0
 
             if guardian.soc < min_soc_termo:
+                if getattr(guardian, "termo_night_chunk1_active", False):
+                    guardian.termo_night_chunk1_active = False
+                    guardian.termo_night_chunk1_done = True
                 self.tuya.send_termo_command(
                     power=False,
                     reason=f"⏸️ Sòl Bateria Assolit: Bateria ha baixat al {guardian.soc:.1f}% (<{min_soc_termo:.0f}%) per preservar reserva SAI"

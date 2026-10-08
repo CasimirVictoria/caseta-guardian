@@ -552,24 +552,14 @@ class CasetaGuardian:
                 target = 88.0
                 phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
 
-        # 3. 🌙 Blindatge SAI Total Nocturn (17:00h a 07:59h Madrid)
+        # 3. 🌙 Blindatge SAI Total Nocturn (17:00h a 07:59h Madrid): 100% Reserva Nocturna & Salut Bateria
         else:
-            if getattr(self, "termo_night_chunk1_active", False):
-                target = 75.0
-                phase_name = "🌙 Termo Tanda 1 (01:00h) -> 75% Sòl Nocturn Bateria"
-            elif 4.0 <= time_decimal < 6.5 and is_termo_active:
-                target = 70.0
-                phase_name = "🌙 Termo Tanda 2 (04:00h) -> 70% Sòl Nocturn Bateria"
-            elif is_termo_active:
-                target = 75.0
-                phase_name = "♨️ Termo Manual Nocturn -> 75% Sòl Protecció Bateria"
-            else:
-                target = 100.0
-                phase_name = "🌙 Blindatge SAI Total Nocturn (100% Reserva & Salut Bateria)"
+            target = 100.0
+            phase_name = "🌙 Blindatge SAI Total Nocturn (100% Reserva & Salut Bateria)"
 
         # 👤 Comprovació de consigna manual de l'usuari a Cerbo GX a la tarda/vespre/nit:
         # Si l'usuari ha fixat manualment un límit superior (ex: 100% per seguretat/tronades), no el rebaixem.
-        if (time_decimal >= 16.5 or time_decimal < 8.0) and not is_termo_active:
+        if time_decimal >= 16.5 or time_decimal < 8.0:
             try:
                 import dbus
                 bus = dbus.SystemBus()
