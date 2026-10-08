@@ -309,6 +309,10 @@ class StateMachine:
                     guardian.termo_last_60_ts = now
                     guardian.termo_heated_today = True
                     guardian.termo_surplus_done = True
+                    if time_decimal < 8.0:
+                        guardian.termo_morning_done = True
+                        guardian.termo_night_chunk1_active = False
+                        guardian.termo_night_chunk1_done = True
                     guardian.termo_low_power_start_time = None
 
                     log.info("♨️ [TERMO] Termòstat intern Ariston ha tallat a 60ºC. Dipòsit ple! Apagant endoll Tuya.")
@@ -375,6 +379,7 @@ class StateMachine:
 
             # 4. Fi de la Finestra Matinal (a les 06:30h exactes per no solapar esmorzars/cafetera)
             if 6.5 <= time_decimal < 8.0:
+                guardian.termo_morning_done = True
                 self.tuya.send_termo_command(
                     power=False,
                     reason="🕒 Fi Finestra Matinada (06:30h): Desconnexió per evitar solapar consums de matí (cafetera, microones)"
@@ -416,27 +421,27 @@ class StateMachine:
             if temp_actual < 54.0:
                 guardian.termo_surplus_done = False
 
-            # 🌙 TANDA 1 NIT: Pre-calfament Nocturn Vall P3 (01:00h a 02:15h) si bateria >= 94%
-            if 1.0 <= time_decimal < 2.25 and grid_present and guardian.soc >= 94.0:
-                if temp_actual < 58.0 and not getattr(guardian, "termo_night_chunk1_done", False):
+            # 🌙 TANDA 1 NIT: Pre-calfament Nocturn Vall P3 (01:00h a 02:15h) si bateria >= 90% (SÍ O SÍ)
+            if 1.0 <= time_decimal < 2.25 and grid_present and guardian.soc >= 90.0:
+                if not getattr(guardian, "termo_night_chunk1_done", False):
                     guardian.termo_night_chunk1_active = True
                     self.start_termo_safely(
                         guardian,
-                        f"🌙 Tanda 1 Nit P3 ({now_madrid.strftime('%H:%M')}h): Pre-calfament nocturn fins al 75% bateria",
+                        f"🌙 Tanda 1 Nit P3 ({now_madrid.strftime('%H:%M')}h): Pre-calfament nocturn sí o sí (fins al 75% bateria o 60ºC)",
                         "🌙 Termo: Tanda 1 Pre-calfament",
                         f"Iniciant tanda 1 a la 01:00h en Vall P3 a 0.07 €/kWh. Bateria al {guardian.soc:.1f}%.",
                         "moon"
                     )
                     return
 
-            # 🌙 TANDA 2 NIT: Rematada Matinal Vall P3 (04:00h a 06:15h) - Dutxa Garantida a 60ºC
-            if 4.0 <= time_decimal < 6.25 and grid_present and guardian.soc >= 88.0:
-                if temp_actual < 58.0 and not getattr(guardian, "termo_morning_done", False):
+            # 🌙 TANDA 2 NIT: Rematada Matinal Vall P3 (04:00h a 06:15h) si bateria >= 80% (SÍ O SÍ)
+            if 4.0 <= time_decimal < 6.25 and grid_present and guardian.soc >= 80.0:
+                if not getattr(guardian, "termo_morning_done", False):
                     self.start_termo_safely(
                         guardian,
-                        f"🌙 Tanda 2 Matinada P3 ({now_madrid.strftime('%H:%M')}h): Rematada a 60ºC per a la dutxa",
+                        f"🌙 Tanda 2 Matinada P3 ({now_madrid.strftime('%H:%M')}h): Rematada a 60ºC sí o sí per a la dutxa",
                         "🌙 Termo: Tanda 2 Matinada",
-                        f"Escalfant dipòsit fins a 60ºC a 0.07 €/kWh per a la dutxa del matí!",
+                        f"Escalfant dipòsit en Vall P3 a 0.07 €/kWh per a la dutxa del matí!",
                         "moon"
                     )
                     return
