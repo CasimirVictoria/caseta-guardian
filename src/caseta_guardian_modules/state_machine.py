@@ -447,7 +447,7 @@ class StateMachine:
                     return
 
             # ☀️ CAS B: Excedents Solars Diürns (09:30h - 17:00h) - Desviador cap a 60ºC
-            can_heat_surplus = (temp_actual < 58.0) and not getattr(guardian, "termo_surplus_done", False)
+            can_heat_surplus = not getattr(guardian, "termo_surplus_done", False)
             detecting_export = (guardian.grid_p is not None and guardian.grid_p < -30.0 and guardian.soc >= 85.0)
             solar_surplus_ok = (guardian.soc >= 88.0 and guardian.pv_p >= 500.0) or (guardian.soc >= 92.0 and guardian.pv_p >= 250.0)
 
