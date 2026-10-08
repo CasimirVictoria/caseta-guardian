@@ -161,13 +161,13 @@ class StateMachine:
                         guardian.set_multiplus_mode(3, f"Descàrrega extrema de bateria ({abs(guardian.bat_i):.1f}A >= 35.0A per >15s)")
                         guardian.high_discharge_start_time = None
                         return
-                # 2. Descàrrega amb bateria baixa (SoC < 75%): Reconnexió en 30s per preservar reserva SAI
-                elif guardian.soc < 75.0:
+                # 2. Descàrrega amb bateria baixa (SoC < 65%): Reconnexió en 30s per preservar reserva SAI
+                elif guardian.soc < 65.0:
                     if dt_discharge >= 30.0:
-                        guardian.set_multiplus_mode(3, f"Descàrrega amb bateria baixa ({guardian.soc:.1f}% < 75% a {abs(guardian.bat_i):.1f}A per >30s)")
+                        guardian.set_multiplus_mode(3, f"Descàrrega amb bateria baixa ({guardian.soc:.1f}% < 65% a {abs(guardian.bat_i):.1f}A per >30s)")
                         guardian.high_discharge_start_time = None
                         return
-                # 3. Descàrrega de cuina / cafetera / microones (fins a 32A amb SoC >= 75%): Permet fins a 4 minuts (240s) sense commutar relé!
+                # 3. Descàrrega de cuina / cafetera / microones (fins a 32A amb SoC >= 65%): Permet fins a 4 minuts (240s) sense commutar relé!
                 else:
                     if dt_discharge >= 240.0:
                         guardian.set_multiplus_mode(3, f"Descàrrega prolongada de cuina ({abs(guardian.bat_i):.1f}A per >4 minuts)")
@@ -176,12 +176,15 @@ class StateMachine:
             else:
                 guardian.high_discharge_start_time = None
 
-            if guardian.soc < 70.0:
-                guardian.set_multiplus_mode(3, f"Bateria ha baixat del sòl segur ({guardian.soc:.1f}% < 70.0%)")
+            # Vespre / Nit: Reconnexió a xarxa en tocar el sòl establert (65% per defecte, 85% si hi ha risc d'apagada)
+            sunset_target_soc = 85.0 if getattr(guardian, "blackout_risk", 0) >= 60 else 65.0
+
+            if guardian.soc < sunset_target_soc:
+                guardian.set_multiplus_mode(3, f"Bateria ha baixat del sòl segur ({guardian.soc:.1f}% < {sunset_target_soc:.0f}%)")
                 return
 
-            if guardian.pv_p < 50.0 and guardian.ac_loads > 300.0 and guardian.soc <= 85.0:
-                guardian.set_multiplus_mode(3, f"Sol esgotat ({guardian.pv_p:.0f}W) i consum a casa ({guardian.ac_loads:.0f}W)")
+            if guardian.pv_p < 50.0 and guardian.soc <= sunset_target_soc:
+                guardian.set_multiplus_mode(3, f"Sol esgotat ({guardian.pv_p:.0f}W) i bateria al sòl establert ({guardian.soc:.1f}% <= {sunset_target_soc:.0f}%)")
                 return
 
         elif guardian.vebus_mode == 3:

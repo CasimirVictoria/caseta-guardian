@@ -552,24 +552,15 @@ class CasetaGuardian:
                 target = 88.0
                 phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
 
-        # 3. 🌙 Blindatge SAI Total Nocturn (17:00h a 07:59h Madrid): 100% Reserva Nocturna & Salut Bateria
+        # 3. 🌆 Vespre i Horari Punta P1 (17:00h a 23:59h Madrid): Sòl 65% (Sense carregar a preu car)
+        elif time_decimal >= 17.0:
+            target = 65.0
+            phase_name = "🌆 Vespre / Punta P1 (65% Sòl Bateria sense càrrega xarxa)"
+
+        # 4. 🌙 Matinada Vall P3 (00:00h a 07:59h Madrid): Tarifa súper barata (0.07 €/kWh) -> 100%
         else:
             target = 100.0
-            phase_name = "🌙 Blindatge SAI Total Nocturn (100% Reserva & Salut Bateria)"
-
-        # 👤 Comprovació de consigna manual de l'usuari a Cerbo GX a la tarda/vespre/nit:
-        # Si l'usuari ha fixat manualment un límit superior (ex: 100% per seguretat/tronades), no el rebaixem.
-        if time_decimal >= 16.5 or time_decimal < 8.0:
-            try:
-                import dbus
-                bus = dbus.SystemBus()
-                obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/BatteryLife/MinimumSocLimit")
-                current_cerbo_soc = float(obj.GetValue())
-                if current_cerbo_soc > target:
-                    target = current_cerbo_soc
-                    phase_name = f"👤 Consigna Manual Prioritària de l'Usuari ({target:.0f}%)"
-            except Exception:
-                pass
+            phase_name = "🌙 Vall P3 Matinada (100% Càrrega Econòmica & Reserva Total)"
 
         self.target_reserve_soc = target
 
