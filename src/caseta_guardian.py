@@ -526,11 +526,11 @@ class CasetaGuardian:
 
         # 1. 🚨 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
         if self.blackout_risk >= 60:
-            target = 95.0
-            phase_name = "🚨 Alerta Calor Extrema (95% SAI Blindat)"
+            target = 85.0
+            phase_name = "🚨 Risc Apagada Rural (85% SAI Blindat)"
 
-        # 2. ☀️ Finestra Diürna Solar (08:00h a 16:59h Madrid): Modulació Dinàmica per Sol Real
-        elif 8.0 <= time_decimal < 17.0:
+        # 2. ☀️ Finestra Diürna Solar (08:00h a 17:59h Madrid): Modulació Dinàmica per Sol Real
+        elif 8.0 <= time_decimal < 18.0:
             today_est = getattr(self, "today_kwh_est", 4.5)
             rem_sun = max(0.0, today_est - self.solar_kwh_today)
             cur_pv = getattr(self, "pv_p", 0.0)
@@ -552,10 +552,10 @@ class CasetaGuardian:
                 target = 88.0
                 phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
 
-        # 3. 🌆 Vespre i Horari Punta P1 (17:00h a 23:59h Madrid): Sòl 65% (Sense carregar a preu car)
-        elif time_decimal >= 17.0:
-            target = 65.0
-            phase_name = "🌆 Vespre / Punta P1 (65% Sòl Bateria sense càrrega xarxa)"
+        # 3. 🌆 Hora Punta P1 i Tram Vespre (18:00h a 23:59h Madrid): Sòl 65% (o 85% si risc d'apagada)
+        elif time_decimal >= 18.0:
+            target = 85.0 if self.blackout_risk >= 60 else 65.0
+            phase_name = f"🌆 Hora Punta P1 / Vespre ({target:.0f}% Sòl Bateria sense càrrega xarxa)"
 
         # 4. 🌙 Matinada Vall P3 (00:00h a 07:59h Madrid): Tarifa súper barata (0.07 €/kWh) -> 100%
         else:
