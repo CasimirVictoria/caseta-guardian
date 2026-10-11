@@ -133,6 +133,7 @@ class CasetaGuardian:
         # Comptadors i temporitzadors
         self.export_start_time = None
         self.high_discharge_start_time = None
+        self.termo_high_discharge_start_time = None
         self.low_voltage_start_time = None
         self.grid_outage_notified = False
         self.grid_recovery_start_time = None

@@ -150,29 +150,34 @@ class StateMachine:
                 guardian.high_discharge_start_time = None
                 return
 
+            # ⚡ 1. RECONNEXIÓ IMMEDIATA PER ALTA CÀRREGA / FORN / ELECTRODOMÈSTICS (>1000W o >20A)
+            # Protegeix la bateria única Pylontech US3000C d'un tall sobtat per protecció interna del BMS.
+            ac_load_w = float(getattr(guardian, "ac_loads", 0.0))
+            bat_i_now = float(getattr(guardian, "bat_i", 0.0))
+            bat_p_now = float(getattr(guardian, "bat_p", 0.0))
+
+            if ac_load_w >= 1000.0 or bat_i_now <= -20.0 or bat_p_now <= -1000.0:
+                guardian.set_multiplus_mode(
+                    3,
+                    f"⚡ Càrrega elevada ({ac_load_w:.0f}W AC / {abs(bat_i_now):.1f}A bat >= 1000W) -> Reconnexió Immediata a Xarxa"
+                )
+                guardian.high_discharge_start_time = None
+                return
+
+            # 2. Descàrrega moderada (>15A / ~750W): Reconnexió ràpida (15s amb SoC baix, 30s amb SoC normal)
             if guardian.bat_i < -15.0:
                 if guardian.high_discharge_start_time is None:
                     guardian.high_discharge_start_time = now
                 dt_discharge = now - guardian.high_discharge_start_time
 
-                # 1. Descàrrega extrema (>35A / ~1.8kW, límit 0.5C Pylontech): Reconnexió ràpida als 15s
-                if guardian.bat_i <= -35.0:
-                    if dt_discharge >= 15.0:
-                        guardian.set_multiplus_mode(3, f"Descàrrega extrema de bateria ({abs(guardian.bat_i):.1f}A >= 35.0A per >15s)")
-                        guardian.high_discharge_start_time = None
-                        return
-                # 2. Descàrrega amb bateria baixa (SoC < 65%): Reconnexió en 30s per preservar reserva SAI
-                elif guardian.soc < 65.0:
-                    if dt_discharge >= 30.0:
-                        guardian.set_multiplus_mode(3, f"Descàrrega amb bateria baixa ({guardian.soc:.1f}% < 65% a {abs(guardian.bat_i):.1f}A per >30s)")
-                        guardian.high_discharge_start_time = None
-                        return
-                # 3. Descàrrega de cuina / cafetera / microones (fins a 32A amb SoC >= 65%): Permet fins a 4 minuts (240s) sense commutar relé!
-                else:
-                    if dt_discharge >= 240.0:
-                        guardian.set_multiplus_mode(3, f"Descàrrega prolongada de cuina ({abs(guardian.bat_i):.1f}A per >4 minuts)")
-                        guardian.high_discharge_start_time = None
-                        return
+                max_allowed_time = 15.0 if guardian.soc < 65.0 else 30.0
+                if dt_discharge >= max_allowed_time:
+                    guardian.set_multiplus_mode(
+                        3,
+                        f"Descàrrega sostinguda de bateria ({abs(guardian.bat_i):.1f}A per >{int(max_allowed_time)}s amb SoC {guardian.soc:.1f}%)"
+                    )
+                    guardian.high_discharge_start_time = None
+                    return
             else:
                 guardian.high_discharge_start_time = None
 
@@ -191,6 +196,11 @@ class StateMachine:
             termo_on = guardian.termo_status.get("is_on", False) if guardian.termo_status else False
             if termo_on:
                 # Amb el termo encès, mai ens desconnectem a Inverter Only (cal suport de xarxa)
+                guardian.export_start_time = None
+                return
+
+            # Amb càrrega domèstica >= 1000W o bateria descarregant-se (>15A), mai ens desconnectem a Inverter Only
+            if getattr(guardian, "ac_loads", 0.0) >= 1000.0 or getattr(guardian, "bat_i", 0.0) <= -15.0:
                 guardian.export_start_time = None
                 return
 
@@ -367,18 +377,18 @@ class StateMachine:
             # 3. Protecció d'intensitat màxima de descàrrega de bateria (>22A sostinguts per >20s)
             # Només actua com a última línia de defensa si la xarxa no ha pogut assumir la càrrega
             if getattr(guardian, "bat_i", 0.0) < -22.0:
-                if guardian.high_discharge_start_time is None:
-                    guardian.high_discharge_start_time = now
-                elif now - guardian.high_discharge_start_time >= 20.0:
+                if getattr(guardian, "termo_high_discharge_start_time", None) is None:
+                    guardian.termo_high_discharge_start_time = now
+                elif now - guardian.termo_high_discharge_start_time >= 20.0:
                     self.tuya.send_termo_command(
                         power=False,
                         reason=f"⚡ Escut Bateria: Descàrrega excessiva ({abs(guardian.bat_i):.1f}A > 22A per >20s). Pausa de 3 minuts."
                     )
                     guardian.termo_cooldown_until = now + 180.0
-                    guardian.high_discharge_start_time = None
+                    guardian.termo_high_discharge_start_time = None
                     return
             else:
-                guardian.high_discharge_start_time = None
+                guardian.termo_high_discharge_start_time = None
 
             # 4. Fi de la Finestra Matinal (a les 06:30h exactes per no solapar esmorzars/cafetera)
             if 6.5 <= time_decimal < 8.0:
