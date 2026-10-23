@@ -39,7 +39,8 @@ except ImportError:
 from caseta_guardian_modules.config import (
     load_config, require_config,
     TOTAL_NOMINAL_KWH, BATTERY_SOH_FACTOR, NET_CAPACITY_KWH,
-    P1_RATE, P2_RATE, P3_RATE, POTENCIA_FIXED_DAY, TAX_MULTIPLIER
+    P1_RATE, P2_RATE, P3_RATE, POTENCIA_FIXED_DAY,
+    BONO_SOCIAL_DAY, LLOGUER_COMPTADOR_DAY, IMPOST_ELECTRIC_RATE, IVA_RATE
 )
 from caseta_guardian_modules.notifications import NotificationManager
 from caseta_guardian_modules.tuya_manager import TuyaManager
@@ -530,28 +531,24 @@ class CasetaGuardian:
             target = 85.0
             phase_name = "🚨 Risc Apagada Rural (85% SAI Blindat)"
 
-        # 2. ☀️ Finestra Diürna Solar (08:00h a 17:59h Madrid): Modulació Dinàmica per Sol Real
+        # 2. ☀️ Finestra Diürna Solar (08:00h a 17:59h Madrid): Sòl 65% amb termo o modulació sense forçar recàrrega de xarxa
         elif 8.0 <= time_decimal < 18.0:
             today_est = getattr(self, "today_kwh_est", 4.5)
             rem_sun = max(0.0, today_est - self.solar_kwh_today)
             cur_pv = getattr(self, "pv_p", 0.0)
 
-            # Si el termo està actiu diürn, fixem 68% per evitar que ESS entre en mode "Recharge"
-            if is_termo_active:
-                target = 68.0
-                phase_name = f"♨️ Termo Actiu Diürn ({cur_pv:.0f}W sol) -> 68% Vas Buit Termo"
+            # Si el termo està actiu diürn, fixem 65% per permetre que treballe fins al 65% i evitar mode "Recharge"
+            if is_termo_active or termo_on:
+                target = 65.0
+                phase_name = f"♨️ Termo Actiu Diürn ({cur_pv:.0f}W sol) -> 65% Sòl Termo"
             # ☀️ Cas 1: Sol Abundant (Sol Real >= 500W O Sol Restant >= 4.5 kWh amb Sol Actual >= 250W)
             elif (cur_pv >= 500.0) or (rem_sun >= 4.5 and cur_pv >= 250.0):
-                target = 68.0
-                phase_name = f"☀️ Sol Radiant ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 68% Vas Buit Gran"
-            # 🌤️ Cas 2: Sol Moderat (Sol Real >= 200W O Sol Restant >= 3.0 kWh amb Sol Actual >= 100W)
-            elif (cur_pv >= 200.0) or (rem_sun >= 3.0 and cur_pv >= 100.0):
-                target = 78.0
-                phase_name = f"🌤️ Sol Moderat ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 78% Vas Equilibrat"
-            # ⛅ Cas 3: Sol Feble / Núvols / Cel Tapat (Sol Real < 100W)
+                target = 65.0
+                phase_name = f"☀️ Sol Radiant ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 65% Vas Buit Gran"
+            # 🌤️ Cas 2: Sol Moderat o Feble -> Sòl al 65% (sense forçar recàrrega des de la xarxa en P1/P2)
             else:
-                target = 88.0
-                phase_name = f"⛅ Sol Feble/Núvols ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 88% Blindatge Bateria"
+                target = 65.0
+                phase_name = f"⛅ Diürn ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 65% Sòl Diürn (Sense Recàrrega Xarxa)"
 
         # 3. 🌆 Hora Punta P1 i Tram Vespre (18:00h a 23:59h Madrid): Sòl 65% (o 85% si risc d'apagada)
         elif time_decimal >= 18.0:
@@ -735,9 +732,15 @@ class CasetaGuardian:
         self.notifications.send_notification("Canvi de Mode MultiPlus", f"{old_mode_str} ➡️ {new_mode_str}\n{reason}", priority=priority)
 
     def calculate_today_cost(self) -> float:
+        # 1. Cost de l'energia importada per trams 2.0TD
         energy_cost = (self.p1_kwh_today * P1_RATE) + (self.p2_kwh_today * P2_RATE) + (self.p3_kwh_today * P3_RATE)
-        total_subtotal = POTENCIA_FIXED_DAY + energy_cost
-        return round(total_subtotal * TAX_MULTIPLIER, 2)
+        # 2. Base d'impost elèctric (Potència contractada + Energia + Finançament Bono Social)
+        base_electric = POTENCIA_FIXED_DAY + energy_cost + BONO_SOCIAL_DAY
+        impost_electric = base_electric * IMPOST_ELECTRIC_RATE
+        # 3. Base imposable total (inclou lloguer de comptador fiscal i-DE)
+        base_imposable = base_electric + impost_electric + LLOGUER_COMPTADOR_DAY
+        # 4. Total facturat amb IVA vigent del 21%
+        return round(base_imposable * (1.0 + IVA_RATE), 2)
 
     def save_daily_stats(self):
         """Guarda els acumulats a disc únicament a mitjanit o a l'aturar el servei (1 cop al dia)."""

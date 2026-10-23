@@ -204,16 +204,16 @@ class StateMachine:
                 guardian.export_start_time = None
                 return
 
-            if guardian.grid_p is not None and guardian.grid_p < -50.0 and guardian.soc >= 88.0:
+            if guardian.grid_p is not None and guardian.grid_p < -50.0 and guardian.soc >= 88.0 and getattr(guardian, "pv_p", 0.0) >= 150.0:
                 # Abans de desconnectar a Inverter Only, comprovem si podem encendre el Termo com a desviador d'excedents!
                 can_heat = (getattr(guardian, "termo_est_temp", 60.0) < 58.0) and not getattr(guardian, "termo_surplus_done", False)
-                if not termo_on and can_heat:
-                    log.info(f"⚡ Abocament detectat ({abs(guardian.grid_p):.0f}W) amb SoC {guardian.soc:.1f}% -> Encenent Termo com a desviador d'excedents!")
+                if not termo_on and can_heat and getattr(guardian, "pv_p", 0.0) >= 250.0:
+                    log.info(f"⚡ Abocament detectat ({abs(guardian.grid_p):.0f}W, Sol {guardian.pv_p:.0f}W) amb SoC {guardian.soc:.1f}% -> Encenent Termo com a desviador d'excedents!")
                     self.start_termo_safely(
                         guardian,
                         f"⚡ Desviador Anti-Abocament ({abs(guardian.grid_p):.0f}W)",
                         "⚡ Termo Engegat (Desviador Anti-Abocament)",
-                        f"Detectat abocament de {abs(guardian.grid_p):.0f}W amb bateria al {guardian.soc:.1f}%. Escalfant termo per no injectar a xarxa!",
+                        f"Detectat abocament solar de {abs(guardian.grid_p):.0f}W (Sol {guardian.pv_p:.0f}W) amb bateria al {guardian.soc:.1f}%. Escalfant termo per no injectar a xarxa!",
                         "electric_plug"
                     )
                     guardian.export_start_time = None
@@ -221,9 +221,9 @@ class StateMachine:
 
                 if guardian.export_start_time is None:
                     guardian.export_start_time = now
-                    log.info(f"⚠️ Detectat abocament de {abs(guardian.grid_p):.0f}W amb SoC {guardian.soc:.1f}%. Iniciant compte enrere de 30s...")
+                    log.info(f"⚠️ Detectat abocament solar de {abs(guardian.grid_p):.0f}W (Sol {guardian.pv_p:.0f}W) amb SoC {guardian.soc:.1f}%. Iniciant compte enrere de 30s...")
                 elif now - guardian.export_start_time >= 30.0:
-                    guardian.set_multiplus_mode(2, f"Abocament sostingut de {abs(guardian.grid_p):.0f}W durant >30s amb SoC {guardian.soc:.1f}%")
+                    guardian.set_multiplus_mode(2, f"Abocament solar sostingut de {abs(guardian.grid_p):.0f}W durant >30s amb SoC {guardian.soc:.1f}%")
                     guardian.export_start_time = None
                     return
             else:
@@ -343,7 +343,7 @@ class StateMachine:
             else:
                 guardian.termo_low_power_start_time = None
 
-            # 2. Sòl de Seguretat Dinàmic de Bateria per Previsió (SAI Prioritari)
+            # 2. Sòl de Seguretat de Bateria per al Termo (65% Diürn, 75%/70% Matinada P3)
             if getattr(guardian, "termo_night_chunk1_active", False):
                 min_soc_termo = 75.0
             elif 4.0 <= time_decimal < 6.5:
@@ -351,17 +351,7 @@ class StateMachine:
             elif time_decimal < 8.0:
                 min_soc_termo = 75.0
             else:
-                rem_sun = getattr(guardian, "remaining_kwh_today", 3.0)
-                today_est = getattr(guardian, "today_kwh_est", 5.0)
-
-                # Previsió bona: sol restant >= 3.5 kWh o dia radiant >= 4.5 kWh abans de les 15:30h -> Sòl 65%
-                if (rem_sun >= 3.5 or today_est >= 4.5) and time_decimal < 15.5:
-                    min_soc_termo = 65.0
-                # Previsió dolenta o vesprada (>16:00h) -> Sòl 80%
-                elif rem_sun < 2.5 or time_decimal >= 16.0 or getattr(guardian, "rain_today", 0.0) >= 0.5:
-                    min_soc_termo = 80.0
-                else:
-                    min_soc_termo = 72.0
+                min_soc_termo = 65.0
 
             if guardian.soc < min_soc_termo:
                 if getattr(guardian, "termo_night_chunk1_active", False):
@@ -461,7 +451,7 @@ class StateMachine:
 
             # ☀️ CAS B: Excedents Solars Diürns (09:30h - 17:00h) - Desviador cap a 60ºC
             can_heat_surplus = not getattr(guardian, "termo_surplus_done", False)
-            detecting_export = (guardian.grid_p is not None and guardian.grid_p < -30.0 and guardian.soc >= 85.0)
+            detecting_export = (guardian.grid_p is not None and guardian.grid_p < -30.0 and guardian.soc >= 85.0 and getattr(guardian, "pv_p", 0.0) >= 250.0)
             solar_surplus_ok = (guardian.soc >= 88.0 and guardian.pv_p >= 500.0) or (guardian.soc >= 92.0 and guardian.pv_p >= 250.0)
 
             if 9.5 <= time_decimal < 17.0 and can_heat_surplus and (solar_surplus_ok or detecting_export):
