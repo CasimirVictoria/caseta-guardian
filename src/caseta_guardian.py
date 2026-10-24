@@ -381,7 +381,7 @@ class CasetaGuardian:
         self.max_temp_today = snapshot.max_temp_today
         self.sunset_temp_today = snapshot.sunset_temp_today
         self.blackout_risk = snapshot.blackout_risk
-        self.target_reserve_soc = snapshot.target_reserve_soc
+        self.last_soc_eval_time = 0.0
 
         if hasattr(self, "mqtt_client") and self.mqtt_client and self.mqtt_client.client:
             try:
@@ -526,17 +526,28 @@ class CasetaGuardian:
                 return
         self.last_soc_eval_time = now
 
-        # 1. 🚨 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
-        if self.blackout_risk >= 60:
+        today_est = getattr(self, "today_kwh_est", 4.5)
+        rem_sun = max(0.0, today_est - self.solar_kwh_today)
+        cur_pv = getattr(self, "pv_p", 0.0)
+        no_appreciable_sun = (cur_pv < 50.0) and (time_decimal >= 18.0 or (time_decimal >= 16.0 and rem_sun < 0.3))
+
+        # 1. 🌙 Matinada Vall P3 (00:00h a 07:59h Madrid): Tarifa súper barata -> 100%
+        if time_decimal < 8.0:
+            target = 100.0
+            phase_name = "🌙 Vall P3 Matinada (100% Càrrega Econòmica & Reserva Total)"
+
+        # 2. 🎉 Cap de Setmana o Festiu amb producció solar menyspreable (tota la vesprada/nit és Vall P3) -> 100%
+        elif is_weekend_or_hol and no_appreciable_sun and not (is_termo_active or termo_on):
+            target = 100.0
+            phase_name = f"🎉 Cap de Setmana / Festiu sense Sol ({cur_pv:.0f}W) -> 100% Reserva Total en Vall P3"
+
+        # 3. 🚨 Alerta de Calor Extrema / Risc Alt d'Apagada (Risc >= 60%)
+        elif self.blackout_risk >= 60:
             target = 85.0
             phase_name = "🚨 Risc Apagada Rural (85% SAI Blindat)"
 
-        # 2. ☀️ Finestra Diürna Solar (08:00h a 17:59h Madrid): Sòl 65% amb termo o modulació sense forçar recàrrega de xarxa
+        # 4. ☀️ Finestra Diürna Solar (08:00h a 17:59h Madrid): Sòl 65% amb termo o modulació sense forçar recàrrega de xarxa
         elif 8.0 <= time_decimal < 18.0:
-            today_est = getattr(self, "today_kwh_est", 4.5)
-            rem_sun = max(0.0, today_est - self.solar_kwh_today)
-            cur_pv = getattr(self, "pv_p", 0.0)
-
             # Si el termo està actiu diürn, fixem 65% per permetre que treballe fins al 65% i evitar mode "Recharge"
             if is_termo_active or termo_on:
                 target = 65.0
@@ -550,29 +561,32 @@ class CasetaGuardian:
                 target = 65.0
                 phase_name = f"⛅ Diürn ({cur_pv:.0f}W, {rem_sun:.1f}kWh restants) -> 65% Sòl Diürn (Sense Recàrrega Xarxa)"
 
-        # 3. 🌆 Hora Punta P1 i Tram Vespre (18:00h a 23:59h Madrid): Sòl 65% (o 85% si risc d'apagada)
-        elif time_decimal >= 18.0:
+        # 5. 🌆 Hora Punta P1 i Tram Vespre entre setmana (18:00h a 23:59h Madrid): Sòl 65% (o 85% si risc d'apagada)
+        else:
             target = 85.0 if self.blackout_risk >= 60 else 65.0
             phase_name = f"🌆 Hora Punta P1 / Vespre ({target:.0f}% Sòl Bateria sense càrrega xarxa)"
 
-        # 4. 🌙 Matinada Vall P3 (00:00h a 07:59h Madrid): Tarifa súper barata (0.07 €/kWh) -> 100%
-        else:
-            target = 100.0
-            phase_name = "🌙 Vall P3 Matinada (100% Càrrega Econòmica & Reserva Total)"
-
         self.target_reserve_soc = target
 
-        if self.last_applied_min_soc != target:
-            # 1. Intent D-Bus Natiu si estem a Cerbo GX (Instantani <0.1ms i atòmic)
-            try:
-                import dbus
-                bus = dbus.SystemBus()
-                obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/BatteryLife/MinimumSocLimit")
+        # Si l'objectiu és carregar al 100% en Vall P3 i ja no hi ha sol apreciable, assegurem Mode 3 (ON)
+        if target >= 100.0 and cur_pv < 50.0 and self.vebus_mode == 2:
+            self.set_multiplus_mode(3, f"🔌 Reconnexió a Xarxa (Mode ON) per a Càrrega al 100% [{phase_name}]")
+
+        dbus_needs_sync = (self.last_applied_min_soc != target)
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            obj = bus.get_object("com.victronenergy.settings", "/Settings/CGwacs/BatteryLife/MinimumSocLimit")
+            cur_dbus_val = obj.GetValue()
+            if cur_dbus_val is not None and abs(float(cur_dbus_val) - target) >= 0.5:
+                dbus_needs_sync = True
+            if dbus_needs_sync:
                 obj.SetValue(dbus.Double(target), dbus_interface="com.victronenergy.BusItem")
                 log.info(f"⚙️ [DBUS NATIU] Sincronitzat Minimum SOC a Cerbo GX: {target:.0f}% [{phase_name}]")
-            except Exception as e:
-                log.debug(f"DBus direct no disponible, usant MQTT: {e}")
+        except Exception as e:
+            log.debug(f"DBus direct no disponible, usant MQTT: {e}")
 
+        if dbus_needs_sync:
             # 2. Publicació MQTT per a clients externs
             topic = f"W/{self.portal_id}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit"
             payload = json.dumps({"value": target})

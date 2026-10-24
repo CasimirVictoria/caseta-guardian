@@ -181,8 +181,13 @@ class StateMachine:
             else:
                 guardian.high_discharge_start_time = None
 
-            # Vespre / Nit: Reconnexió a xarxa en tocar el sòl establert (65% per defecte, 85% si hi ha risc d'apagada)
-            sunset_target_soc = 85.0 if getattr(guardian, "blackout_risk", 0) >= 60 else 65.0
+            # Vespre / Nit: Reconnexió a xarxa en tocar el sòl establert (65% entre setmana, 85% si risc d'apagada, 100% en Vall P3 / Cap de setmana sense sol)
+            default_floor = 85.0 if getattr(guardian, "blackout_risk", 0) >= 60 else 65.0
+            sunset_target_soc = max(default_floor, float(getattr(guardian, "target_reserve_soc", default_floor)))
+
+            if guardian.pv_p < 50.0 and sunset_target_soc >= 100.0:
+                guardian.set_multiplus_mode(3, f"Sol esgotat ({guardian.pv_p:.0f}W) i objectiu SoC al 100% en Vall P3")
+                return
 
             if guardian.soc < sunset_target_soc:
                 guardian.set_multiplus_mode(3, f"Bateria ha baixat del sòl segur ({guardian.soc:.1f}% < {sunset_target_soc:.0f}%)")
