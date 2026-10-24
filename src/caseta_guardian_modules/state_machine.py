@@ -181,20 +181,30 @@ class StateMachine:
             else:
                 guardian.high_discharge_start_time = None
 
-            # Vespre / Nit: Reconnexió a xarxa en tocar el sòl establert (65% entre setmana, 85% si risc d'apagada, 100% en Vall P3 / Cap de setmana sense sol)
+            # 3. Sense producció solar apreciable (<50W): no hi ha cap perill d'abocament -> Sempre Mode 3 (ON)
+            # A la vesprada/nit (>=16:00h o <09:00h) és immediat; en hores centrals s'esperen 60s per filtrar núvols passatgers
+            time_decimal = now_madrid.hour + (now_madrid.minute / 60.0)
+            if guardian.pv_p < 50.0:
+                if time_decimal >= 16.0 or time_decimal < 9.0:
+                    guardian.no_sun_mode2_start_time = None
+                    guardian.set_multiplus_mode(3, f"Producció solar menyspreable ({guardian.pv_p:.0f}W < 50W) a la vesprada/nit -> Reconnexió a Mode 3 (ON)")
+                    return
+                else:
+                    if getattr(guardian, "no_sun_mode2_start_time", None) is None:
+                        guardian.no_sun_mode2_start_time = now
+                    elif now - guardian.no_sun_mode2_start_time >= 60.0:
+                        guardian.no_sun_mode2_start_time = None
+                        guardian.set_multiplus_mode(3, f"Producció solar menyspreable sostinguda ({guardian.pv_p:.0f}W < 50W per >60s) -> Reconnexió a Mode 3 (ON)")
+                        return
+            else:
+                guardian.no_sun_mode2_start_time = None
+
+            # 4. Sòl de seguretat de bateria (65% entre setmana, 85% si risc d'apagada, 100% en Vall P3 / Cap de setmana sense sol)
             default_floor = 85.0 if getattr(guardian, "blackout_risk", 0) >= 60 else 65.0
             sunset_target_soc = max(default_floor, float(getattr(guardian, "target_reserve_soc", default_floor)))
 
-            if guardian.pv_p < 50.0 and sunset_target_soc >= 100.0:
-                guardian.set_multiplus_mode(3, f"Sol esgotat ({guardian.pv_p:.0f}W) i objectiu SoC al 100% en Vall P3")
-                return
-
             if guardian.soc < sunset_target_soc:
                 guardian.set_multiplus_mode(3, f"Bateria ha baixat del sòl segur ({guardian.soc:.1f}% < {sunset_target_soc:.0f}%)")
-                return
-
-            if guardian.pv_p < 50.0 and guardian.soc <= sunset_target_soc:
-                guardian.set_multiplus_mode(3, f"Sol esgotat ({guardian.pv_p:.0f}W) i bateria al sòl establert ({guardian.soc:.1f}% <= {sunset_target_soc:.0f}%)")
                 return
 
         elif guardian.vebus_mode == 3:

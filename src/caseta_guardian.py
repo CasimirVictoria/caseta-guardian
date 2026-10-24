@@ -568,9 +568,9 @@ class CasetaGuardian:
 
         self.target_reserve_soc = target
 
-        # Si l'objectiu és carregar al 100% en Vall P3 i ja no hi ha sol apreciable, assegurem Mode 3 (ON)
-        if target >= 100.0 and cur_pv < 50.0 and self.vebus_mode == 2:
-            self.set_multiplus_mode(3, f"🔌 Reconnexió a Xarxa (Mode ON) per a Càrrega al 100% [{phase_name}]")
+        # Sempre que ja no hi haja producció solar apreciable a la vesprada/nit o l'objectiu siga 100%, assegurem Mode 3 (ON)
+        if (no_appreciable_sun or (target >= 100.0 and cur_pv < 50.0)) and self.vebus_mode == 2:
+            self.set_multiplus_mode(3, f"🔌 Producció solar menyspreable ({cur_pv:.0f}W) -> Reconnexió a Mode 3 (ON) [{phase_name}]")
 
         dbus_needs_sync = (self.last_applied_min_soc != target)
         try:
